@@ -1,0 +1,1 @@
+/mnt/external2/qemu/qemu-1.2.0/Makefile.user

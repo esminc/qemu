@@ -1,0 +1,19 @@
+$ export ARCH=arm
+$ export CROSS_COMPILE=../prebuilt/linux-x86/toolchain/arm-eabi-4.4.0/bin/arm-eabi- 
+
+$ make goldfish_defconfig 
+
+$ make menuconfig 
+
+→ SWITCH＿DRIVERを有効にすること。
+
+$ make 
+
+==================
+
+emulator 起動方法
+
+source build/envsetup.sh 
+lunch
+ ./out/host/linux-x86/bin/emulator -kernel ../android_kernel/goldfish/arch/arm/boot/zImage -shell
+

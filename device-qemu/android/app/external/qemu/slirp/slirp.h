@@ -1,12 +1,32 @@
 #ifndef __COMMON_H__
 #define __COMMON_H__
 
+#define CONFIG_QEMU
+
+//#define DEBUG 1
+
+// Uncomment the following line to enable SLIRP statistics printing in Qemu
+//#define LOG_ENABLED
+
+#ifdef LOG_ENABLED
+#define STAT(expr) expr
+#else
+#define STAT(expr) do { } while(0)
+#endif
+
+#ifndef CONFIG_QEMU
+#include "version.h"
+#endif
 #include "config-host.h"
 #include "slirp_config.h"
 
 #ifdef _WIN32
 # include <inttypes.h>
 
+typedef uint8_t u_int8_t;
+typedef uint16_t u_int16_t;
+typedef uint32_t u_int32_t;
+typedef uint64_t u_int64_t;
 typedef char *caddr_t;
 
 # include <windows.h>
@@ -15,12 +35,16 @@ typedef char *caddr_t;
 # include <sys/timeb.h>
 # include <iphlpapi.h>
 
+# define EWOULDBLOCK WSAEWOULDBLOCK
+# define EINPROGRESS WSAEINPROGRESS
+# define ENOTCONN WSAENOTCONN
+# define EHOSTUNREACH WSAEHOSTUNREACH
+# define ENETUNREACH WSAENETUNREACH
+# define ECONNREFUSED WSAECONNREFUSED
 #else
 # define ioctlsocket ioctl
 # define closesocket(s) close(s)
-# if !defined(__HAIKU__)
-#  define O_BINARY 0
-# endif
+# define O_BINARY 0
 #endif
 
 #include <sys/types.h>
@@ -29,6 +53,35 @@ typedef char *caddr_t;
 #endif
 
 #include <sys/time.h>
+
+#ifdef NEED_TYPEDEFS
+typedef char int8_t;
+typedef unsigned char u_int8_t;
+
+# if SIZEOF_SHORT == 2
+    typedef short int16_t;
+    typedef unsigned short u_int16_t;
+# else
+#  if SIZEOF_INT == 2
+    typedef int int16_t;
+    typedef unsigned int u_int16_t;
+#  else
+    #error Cannot find a type with sizeof() == 2
+#  endif
+# endif
+
+# if SIZEOF_SHORT == 4
+   typedef short int32_t;
+   typedef unsigned short u_int32_t;
+# else
+#  if SIZEOF_INT == 4
+    typedef int int32_t;
+    typedef unsigned int u_int32_t;
+#  else
+    #error Cannot find a type with sizeof() == 4
+#  endif
+# endif
+#endif /* NEED_TYPEDEFS */
 
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
@@ -66,20 +119,35 @@ typedef char *caddr_t;
 #include <sys/uio.h>
 #endif
 
+#undef _P
+#ifndef NO_PROTOTYPES
+#  define   _P(x)   x
+#else
+#  define   _P(x)   ()
+#endif
+
 #ifndef _WIN32
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #endif
 
+#ifdef GETTIMEOFDAY_ONE_ARG
+#define gettimeofday(x, y) gettimeofday(x)
+#endif
+
 /* Systems lacking strdup() definition in <string.h>. */
 #if defined(ultrix)
-char *strdup(const char *);
+char *strdup _P((const char *));
 #endif
 
 /* Systems lacking malloc() definition in <stdlib.h>. */
 #if defined(ultrix) || defined(hcx)
-void *malloc(size_t arg);
-void free(void *ptr);
+void *malloc _P((size_t arg));
+void free _P((void *ptr));
+#endif
+
+#ifndef HAVE_INET_ATON
+int inet_aton _P((const char *cp, struct in_addr *ia));
 #endif
 
 #include <fcntl.h>
@@ -133,23 +201,20 @@ void free(void *ptr);
 
 #include "debug.h"
 
-#include "qemu-queue.h"
-#include "qemu_socket.h"
-
-#include "libslirp.h"
 #include "ip.h"
 #include "tcp.h"
 #include "tcp_timer.h"
 #include "tcp_var.h"
 #include "tcpip.h"
 #include "udp.h"
-#include "ip_icmp.h"
+#include "icmp_var.h"
 #include "mbuf.h"
 #include "sbuf.h"
 #include "socket.h"
 #include "if.h"
 #include "main.h"
 #include "misc.h"
+#include "ctl.h"
 #ifdef USE_PPP
 #include "ppp/pppd.h"
 #include "ppp/ppp.h"
@@ -157,133 +222,47 @@ void free(void *ptr);
 
 #include "bootp.h"
 #include "tftp.h"
+#include "libslirp.h"
 
-#define ETH_ALEN 6
-#define ETH_HLEN 14
-
-#define ETH_P_IP  0x0800        /* Internet Protocol packet  */
-#define ETH_P_ARP 0x0806        /* Address Resolution packet */
-
-#define ARPOP_REQUEST 1         /* ARP request */
-#define ARPOP_REPLY   2         /* ARP reply   */
-
-struct ethhdr {
-    unsigned char  h_dest[ETH_ALEN];   /* destination eth addr */
-    unsigned char  h_source[ETH_ALEN]; /* source ether addr    */
-    unsigned short h_proto;            /* packet type ID field */
-};
-
-struct arphdr {
-    unsigned short ar_hrd;      /* format of hardware address */
-    unsigned short ar_pro;      /* format of protocol address */
-    unsigned char  ar_hln;      /* length of hardware address */
-    unsigned char  ar_pln;      /* length of protocol address */
-    unsigned short ar_op;       /* ARP opcode (command)       */
-
-    /*
-     *  Ethernet looks like this : This bit is variable sized however...
-     */
-    unsigned char ar_sha[ETH_ALEN]; /* sender hardware address */
-    uint32_t      ar_sip;           /* sender IP address       */
-    unsigned char ar_tha[ETH_ALEN]; /* target hardware address */
-    uint32_t      ar_tip;           /* target IP address       */
-} QEMU_PACKED;
-
-#define ARP_TABLE_SIZE 16
-
-typedef struct ArpTable {
-    struct arphdr table[ARP_TABLE_SIZE];
-    int next_victim;
-} ArpTable;
-
-void arp_table_add(Slirp *slirp, uint32_t ip_addr, uint8_t ethaddr[ETH_ALEN]);
-
-bool arp_table_search(Slirp *slirp, uint32_t ip_addr,
-                      uint8_t out_ethaddr[ETH_ALEN]);
-
-struct Slirp {
-    QTAILQ_ENTRY(Slirp) entry;
-
-    /* virtual network configuration */
-    struct in_addr vnetwork_addr;
-    struct in_addr vnetwork_mask;
-    struct in_addr vhost_addr;
-    struct in_addr vdhcp_startaddr;
-    struct in_addr vnameserver_addr;
-
-    struct in_addr client_ipaddr;
-    char client_hostname[33];
-
-    int restricted;
-    struct timeval tt;
-    struct ex_list *exec_list;
-
-    /* mbuf states */
-    struct mbuf m_freelist, m_usedlist;
-    int mbuf_alloced;
-
-    /* if states */
-    struct mbuf if_fastq;   /* fast queue (for interactive data) */
-    struct mbuf if_batchq;  /* queue for non-interactive data */
-    struct mbuf *next_m;    /* pointer to next mbuf to output */
-    bool if_start_busy;     /* avoid if_start recursion */
-
-    /* ip states */
-    struct ipq ipq;         /* ip reass. queue */
-    uint16_t ip_id;         /* ip packet ctr, for ids */
-
-    /* bootp/dhcp states */
-    BOOTPClient bootp_clients[NB_BOOTP_CLIENTS];
-    char *bootp_filename;
-
-    /* tcp states */
-    struct socket tcb;
-    struct socket *tcp_last_so;
-    tcp_seq tcp_iss;        /* tcp initial send seq # */
-    uint32_t tcp_now;       /* for RFC 1323 timestamps */
-
-    /* udp states */
-    struct socket udb;
-    struct socket *udp_last_so;
-
-    /* icmp states */
-    struct socket icmp;
-    struct socket *icmp_last_so;
-
-    /* tftp states */
-    char *tftp_prefix;
-    struct tftp_session tftp_sessions[TFTP_SESSIONS_MAX];
-
-    ArpTable arp_table;
-
-    void *opaque;
-};
-
-extern Slirp *slirp_instance;
+extern struct ttys *ttys_unit[MAX_INTERFACES];
 
 #ifndef NULL
 #define NULL (void *)0
 #endif
 
 #ifndef FULL_BOLT
-void if_start(Slirp *);
+void if_start _P((void));
 #else
-void if_start(struct ttys *);
+void if_start _P((struct ttys *));
+#endif
+
+#ifdef BAD_SPRINTF
+# define vsprintf vsprintf_len
+# define sprintf sprintf_len
+ extern int vsprintf_len _P((char *, const char *, va_list));
+ extern int sprintf_len _P((char *, const char *, ...));
+#endif
+
+#ifdef DECLARE_SPRINTF
+# ifndef BAD_SPRINTF
+ extern int vsprintf _P((char *, const char *, va_list));
+# endif
+ extern int vfprintf _P((FILE *, const char *, va_list));
 #endif
 
 #ifndef HAVE_STRERROR
- char *strerror(int error);
+ extern char *strerror _P((int error));
 #endif
 
 #ifndef HAVE_INDEX
- char *index(const char *, int);
+ char *index _P((const char *, int));
 #endif
 
 #ifndef HAVE_GETHOSTID
- long gethostid(void);
+ long gethostid _P((void));
 #endif
 
-void lprint(const char *, ...) GCC_FMT_ATTR(1, 2);
+void lprint _P((const char *, ...));
 
 #ifndef _WIN32
 #include <netdb.h>
@@ -298,41 +277,39 @@ void lprint(const char *, ...) GCC_FMT_ATTR(1, 2);
 int cksum(struct mbuf *m, int len);
 
 /* if.c */
-void if_init(Slirp *);
-void if_output(struct socket *, struct mbuf *);
+void if_init _P((void));
+void if_output _P((struct socket *, struct mbuf *));
 
 /* ip_input.c */
-void ip_init(Slirp *);
-void ip_cleanup(Slirp *);
-void ip_input(struct mbuf *);
-void ip_slowtimo(Slirp *);
-void ip_stripoptions(register struct mbuf *, struct mbuf *);
+void ip_init _P((void));
+void ip_input _P((struct mbuf *));
+void ip_slowtimo _P((void));
+void ip_stripoptions _P((register struct mbuf *, struct mbuf *));
 
 /* ip_output.c */
-int ip_output(struct socket *, struct mbuf *);
+int ip_output _P((struct socket *, struct mbuf *));
 
 /* tcp_input.c */
-void tcp_input(register struct mbuf *, int, struct socket *);
-int tcp_mss(register struct tcpcb *, u_int);
+void tcp_input _P((register struct mbuf *, int, struct socket *));
+int tcp_mss _P((register struct tcpcb *, u_int));
 
 /* tcp_output.c */
-int tcp_output(register struct tcpcb *);
-void tcp_setpersist(register struct tcpcb *);
+int tcp_output _P((register struct tcpcb *));
+void tcp_setpersist _P((register struct tcpcb *));
 
 /* tcp_subr.c */
-void tcp_init(Slirp *);
-void tcp_cleanup(Slirp *);
-void tcp_template(struct tcpcb *);
-void tcp_respond(struct tcpcb *, register struct tcpiphdr *, register struct mbuf *, tcp_seq, tcp_seq, int);
-struct tcpcb * tcp_newtcpcb(struct socket *);
-struct tcpcb * tcp_close(register struct tcpcb *);
-void tcp_sockclosed(struct tcpcb *);
-int tcp_fconnect(struct socket *);
-void tcp_connect(struct socket *);
-int tcp_attach(struct socket *);
-uint8_t tcp_tos(struct socket *);
-int tcp_emu(struct socket *, struct mbuf *);
-int tcp_ctl(struct socket *);
+void tcp_init _P((void));
+void tcp_template _P((struct tcpcb *));
+void tcp_respond _P((struct tcpcb *, register struct tcpiphdr *, register struct mbuf *, tcp_seq, tcp_seq, int));
+struct tcpcb * tcp_newtcpcb _P((struct socket *));
+struct tcpcb * tcp_close _P((register struct tcpcb *));
+void tcp_sockclosed _P((struct tcpcb *));
+int tcp_fconnect _P((struct socket *));
+void tcp_connect _P((struct socket *));
+int tcp_attach _P((struct socket *));
+u_int8_t tcp_tos _P((struct socket *));
+int tcp_emu _P((struct socket *, struct mbuf *));
+int tcp_ctl _P((struct socket *));
 struct tcpcb *tcp_drop(struct tcpcb *tp, int err);
 
 #ifdef USE_PPP

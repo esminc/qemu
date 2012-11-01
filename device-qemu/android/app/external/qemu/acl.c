@@ -24,9 +24,10 @@
 
 
 #include "qemu-common.h"
+#include "sysemu.h"
 #include "acl.h"
 
-#ifdef CONFIG_FNMATCH
+#ifdef HAVE_FNMATCH_H
 #include <fnmatch.h>
 #endif
 
@@ -55,17 +56,17 @@ qemu_acl *qemu_acl_init(const char *aclname)
     if (acl)
         return acl;
 
-    acl = g_malloc(sizeof(*acl));
-    acl->aclname = g_strdup(aclname);
+    acl = qemu_malloc(sizeof(*acl));
+    acl->aclname = qemu_strdup(aclname);
     /* Deny by default, so there is no window of "open
      * access" between QEMU starting, and the user setting
      * up ACLs in the monitor */
     acl->defaultDeny = 1;
 
     acl->nentries = 0;
-    QTAILQ_INIT(&acl->entries);
+    TAILQ_INIT(&acl->entries);
 
-    acls = g_realloc(acls, sizeof(*acls) * (nacls +1));
+    acls = qemu_realloc(acls, sizeof(*acls) * (nacls +1));
     acls[nacls] = acl;
     nacls++;
 
@@ -77,8 +78,8 @@ int qemu_acl_party_is_allowed(qemu_acl *acl,
 {
     qemu_acl_entry *entry;
 
-    QTAILQ_FOREACH(entry, &acl->entries, next) {
-#ifdef CONFIG_FNMATCH
+    TAILQ_FOREACH(entry, &acl->entries, next) {
+#ifdef HAVE_FNMATCH_H
         if (fnmatch(entry->match, party, 0) == 0)
             return entry->deny ? 0 : 1;
 #else
@@ -95,14 +96,14 @@ int qemu_acl_party_is_allowed(qemu_acl *acl,
 
 void qemu_acl_reset(qemu_acl *acl)
 {
-    qemu_acl_entry *entry, *next_entry;
+    qemu_acl_entry *entry;
 
     /* Put back to deny by default, so there is no window
      * of "open access" while the user re-initializes the
      * access control list */
     acl->defaultDeny = 1;
-    QTAILQ_FOREACH_SAFE(entry, &acl->entries, next, next_entry) {
-        QTAILQ_REMOVE(&acl->entries, entry, next);
+    TAILQ_FOREACH(entry, &acl->entries, next) {
+        TAILQ_REMOVE(&acl->entries, entry, next);
         free(entry->match);
         free(entry);
     }
@@ -116,11 +117,11 @@ int qemu_acl_append(qemu_acl *acl,
 {
     qemu_acl_entry *entry;
 
-    entry = g_malloc(sizeof(*entry));
-    entry->match = g_strdup(match);
+    entry = qemu_malloc(sizeof(*entry));
+    entry->match = qemu_strdup(match);
     entry->deny = deny;
 
-    QTAILQ_INSERT_TAIL(&acl->entries, entry, next);
+    TAILQ_INSERT_TAIL(&acl->entries, entry, next);
     acl->nentries++;
 
     return acl->nentries;
@@ -142,14 +143,14 @@ int qemu_acl_insert(qemu_acl *acl,
         return qemu_acl_append(acl, deny, match);
 
 
-    entry = g_malloc(sizeof(*entry));
-    entry->match = g_strdup(match);
+    entry = qemu_malloc(sizeof(*entry));
+    entry->match = qemu_strdup(match);
     entry->deny = deny;
 
-    QTAILQ_FOREACH(tmp, &acl->entries, next) {
+    TAILQ_FOREACH(tmp, &acl->entries, next) {
         i++;
         if (i == index) {
-            QTAILQ_INSERT_BEFORE(tmp, entry, next);
+            TAILQ_INSERT_BEFORE(tmp, entry, next);
             acl->nentries++;
             break;
         }
@@ -164,10 +165,10 @@ int qemu_acl_remove(qemu_acl *acl,
     qemu_acl_entry *entry;
     int i = 0;
 
-    QTAILQ_FOREACH(entry, &acl->entries, next) {
+    TAILQ_FOREACH(entry, &acl->entries, next) {
         i++;
         if (strcmp(entry->match, match) == 0) {
-            QTAILQ_REMOVE(&acl->entries, entry, next);
+            TAILQ_REMOVE(&acl->entries, entry, next);
             return i;
         }
     }

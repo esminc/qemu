@@ -41,7 +41,6 @@ typedef struct BDRVRawState {
 int qemu_ftruncate64(int fd, int64_t length)
 {
     LARGE_INTEGER li;
-    DWORD dw;
     LONG high;
     HANDLE h;
     BOOL res;
@@ -54,15 +53,12 @@ int qemu_ftruncate64(int fd, int64_t length)
     /* get current position, ftruncate do not change position */
     li.HighPart = 0;
     li.LowPart = SetFilePointer (h, 0, &li.HighPart, FILE_CURRENT);
-    if (li.LowPart == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+    if (li.LowPart == 0xffffffffUL && GetLastError() != NO_ERROR)
 	return -1;
-    }
 
     high = length >> 32;
-    dw = SetFilePointer(h, (DWORD) length, &high, FILE_BEGIN);
-    if (dw == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+    if (!SetFilePointer(h, (DWORD) length, &high, FILE_BEGIN))
 	return -1;
-    }
     res = SetEndOfFile(h);
 
     /* back to old position */
@@ -80,25 +76,29 @@ static int set_sparse(int fd)
 static int raw_open(BlockDriverState *bs, const char *filename, int flags)
 {
     BDRVRawState *s = bs->opaque;
-    int access_flags;
+    int access_flags, create_flags;
     DWORD overlapped;
 
     s->type = FTYPE_FILE;
 
-    if (flags & BDRV_O_RDWR) {
+    if ((flags & BDRV_O_ACCESS) == O_RDWR) {
         access_flags = GENERIC_READ | GENERIC_WRITE;
     } else {
         access_flags = GENERIC_READ;
     }
-
+    if (flags & BDRV_O_CREAT) {
+        create_flags = CREATE_ALWAYS;
+    } else {
+        create_flags = OPEN_EXISTING;
+    }
     overlapped = FILE_ATTRIBUTE_NORMAL;
-    if (flags & BDRV_O_NOCACHE)
-        overlapped |= FILE_FLAG_NO_BUFFERING;
-    if (!(flags & BDRV_O_CACHE_WB))
+    if ((flags & BDRV_O_NOCACHE))
+        overlapped |= FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH;
+    else if (!(flags & BDRV_O_CACHE_WB))
         overlapped |= FILE_FLAG_WRITE_THROUGH;
     s->hfile = CreateFile(filename, access_flags,
                           FILE_SHARE_READ, NULL,
-                          OPEN_EXISTING, overlapped, NULL);
+                          create_flags, overlapped, NULL);
     if (s->hfile == INVALID_HANDLE_VALUE) {
         int err = GetLastError();
 
@@ -151,17 +151,10 @@ static int raw_write(BlockDriverState *bs, int64_t sector_num,
     return ret_count;
 }
 
-static int raw_flush(BlockDriverState *bs)
+static void raw_flush(BlockDriverState *bs)
 {
     BDRVRawState *s = bs->opaque;
-    int ret;
-
-    ret = FlushFileBuffers(s->hfile);
-    if (ret == 0) {
-        return -EIO;
-    }
-
-    return 0;
+    FlushFileBuffers(s->hfile);
 }
 
 static void raw_close(BlockDriverState *bs)
@@ -217,31 +210,6 @@ static int64_t raw_getlength(BlockDriverState *bs)
     return l.QuadPart;
 }
 
-static int64_t raw_get_allocated_file_size(BlockDriverState *bs)
-{
-    typedef DWORD (WINAPI * get_compressed_t)(const char *filename,
-                                              DWORD * high);
-    get_compressed_t get_compressed;
-    struct _stati64 st;
-    const char *filename = bs->filename;
-    /* WinNT support GetCompressedFileSize to determine allocate size */
-    get_compressed =
-        (get_compressed_t) GetProcAddress(GetModuleHandle("kernel32"),
-                                            "GetCompressedFileSizeA");
-    if (get_compressed) {
-        DWORD high, low;
-        low = get_compressed(filename, &high);
-        if (low != 0xFFFFFFFFlu || GetLastError() == NO_ERROR) {
-            return (((int64_t) high) << 32) + low;
-        }
-    }
-
-    if (_stati64(filename, &st) < 0) {
-        return -1;
-    }
-    return st.st_size;
-}
-
 static int raw_create(const char *filename, QEMUOptionParameter *options)
 {
     int fd;
@@ -255,13 +223,13 @@ static int raw_create(const char *filename, QEMUOptionParameter *options)
         options++;
     }
 
-    fd = qemu_open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY,
-                   0644);
+    fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY,
+              0644);
     if (fd < 0)
         return -EIO;
     set_sparse(fd);
     ftruncate(fd, total_size * 512);
-    qemu_close(fd);
+    close(fd);
     return 0;
 }
 
@@ -274,22 +242,17 @@ static QEMUOptionParameter raw_create_options[] = {
     { NULL }
 };
 
-static BlockDriver bdrv_file = {
-    .format_name	= "file",
-    .protocol_name	= "file",
+static BlockDriver bdrv_raw = {
+    .format_name	= "raw",
     .instance_size	= sizeof(BDRVRawState),
-    .bdrv_file_open	= raw_open,
+    .bdrv_open		= raw_open,
     .bdrv_close		= raw_close,
     .bdrv_create	= raw_create,
-
-    .bdrv_read              = raw_read,
-    .bdrv_write             = raw_write,
-    .bdrv_co_flush_to_disk  = raw_flush,
-
+    .bdrv_flush		= raw_flush,
+    .bdrv_read		= raw_read,
+    .bdrv_write		= raw_write,
     .bdrv_truncate	= raw_truncate,
     .bdrv_getlength	= raw_getlength,
-    .bdrv_get_allocated_file_size
-                        = raw_get_allocated_file_size,
 
     .create_options = raw_create_options,
 };
@@ -374,7 +337,7 @@ static int hdev_open(BlockDriverState *bs, const char *filename, int flags)
     }
     s->type = find_device_type(bs, filename);
 
-    if (flags & BDRV_O_RDWR) {
+    if ((flags & BDRV_O_ACCESS) == O_RDWR) {
         access_flags = GENERIC_READ | GENERIC_WRITE;
     } else {
         access_flags = GENERIC_READ;
@@ -382,9 +345,9 @@ static int hdev_open(BlockDriverState *bs, const char *filename, int flags)
     create_flags = OPEN_EXISTING;
 
     overlapped = FILE_ATTRIBUTE_NORMAL;
-    if (flags & BDRV_O_NOCACHE)
-        overlapped |= FILE_FLAG_NO_BUFFERING;
-    if (!(flags & BDRV_O_CACHE_WB))
+    if ((flags & BDRV_O_NOCACHE))
+        overlapped |= FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH;
+    else if (!(flags & BDRV_O_CACHE_WB))
         overlapped |= FILE_FLAG_WRITE_THROUGH;
     s->hfile = CreateFile(filename, access_flags,
                           FILE_SHARE_READ, NULL,
@@ -399,33 +362,58 @@ static int hdev_open(BlockDriverState *bs, const char *filename, int flags)
     return 0;
 }
 
-static int hdev_has_zero_init(BlockDriverState *bs)
+#if 0
+/***********************************************/
+/* removable device additional commands */
+
+static int raw_is_inserted(BlockDriverState *bs)
 {
-    return 0;
+    return 1;
 }
+
+static int raw_media_changed(BlockDriverState *bs)
+{
+    return -ENOTSUP;
+}
+
+static int raw_eject(BlockDriverState *bs, int eject_flag)
+{
+    DWORD ret_count;
+
+    if (s->type == FTYPE_FILE)
+        return -ENOTSUP;
+    if (eject_flag) {
+        DeviceIoControl(s->hfile, IOCTL_STORAGE_EJECT_MEDIA,
+                        NULL, 0, NULL, 0, &lpBytesReturned, NULL);
+    } else {
+        DeviceIoControl(s->hfile, IOCTL_STORAGE_LOAD_MEDIA,
+                        NULL, 0, NULL, 0, &lpBytesReturned, NULL);
+    }
+}
+
+static int raw_set_locked(BlockDriverState *bs, int locked)
+{
+    return -ENOTSUP;
+}
+#endif
 
 static BlockDriver bdrv_host_device = {
     .format_name	= "host_device",
-    .protocol_name	= "host_device",
     .instance_size	= sizeof(BDRVRawState),
     .bdrv_probe_device	= hdev_probe_device,
-    .bdrv_file_open	= hdev_open,
+    .bdrv_open		= hdev_open,
     .bdrv_close		= raw_close,
-    .bdrv_has_zero_init = hdev_has_zero_init,
+    .bdrv_flush		= raw_flush,
 
-    .bdrv_read              = raw_read,
-    .bdrv_write             = raw_write,
-    .bdrv_co_flush_to_disk  = raw_flush,
-
+    .bdrv_read		= raw_read,
+    .bdrv_write	        = raw_write,
     .bdrv_getlength	= raw_getlength,
-    .bdrv_get_allocated_file_size
-                        = raw_get_allocated_file_size,
 };
 
-static void bdrv_file_init(void)
+static void bdrv_raw_init(void)
 {
-    bdrv_register(&bdrv_file);
+    bdrv_register(&bdrv_raw);
     bdrv_register(&bdrv_host_device);
 }
 
-block_init(bdrv_file_init);
+block_init(bdrv_raw_init);

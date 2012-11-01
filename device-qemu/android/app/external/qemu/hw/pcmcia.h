@@ -1,5 +1,8 @@
 /* PCMCIA/Cardbus */
 
+#ifndef _HW_PCMCIA_H
+#define _HW_PCMCIA_H
+
 #include "qemu-common.h"
 
 typedef struct {
@@ -48,4 +51,6 @@ struct PCMCIACardState {
 #define CISTPL_ENDMARK		0xff
 
 /* dscm1xxxx.c */
-PCMCIACardState *dscm1xxxx_init(DriveInfo *bdrv);
+PCMCIACardState *dscm1xxxx_init(BlockDriverState *bdrv);
+
+#endif /* _HW_PCMCIA_H */

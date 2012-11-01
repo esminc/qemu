@@ -72,7 +72,7 @@ static void glue (audio_init_nb_voices_, TYPE) (struct audio_driver *drv)
 static void glue (audio_pcm_hw_free_resources_, TYPE) (HW *hw)
 {
     if (HWBUF) {
-        g_free (HWBUF);
+        qemu_free (HWBUF);
     }
 
     HWBUF = NULL;
@@ -93,7 +93,7 @@ static int glue (audio_pcm_hw_alloc_resources_, TYPE) (HW *hw)
 static void glue (audio_pcm_sw_free_resources_, TYPE) (SW *sw)
 {
     if (sw->buf) {
-        g_free (sw->buf);
+        qemu_free (sw->buf);
     }
 
     if (sw->rate) {
@@ -108,7 +108,11 @@ static int glue (audio_pcm_sw_alloc_resources_, TYPE) (SW *sw)
 {
     int samples;
 
+#ifdef DAC
+    samples = sw->hw->samples;
+#else
     samples = ((int64_t) sw->hw->samples << 32) / sw->ratio;
+#endif
 
     sw->buf = audio_calloc (AUDIO_FUNC, samples, sizeof (struct st_sample));
     if (!sw->buf) {
@@ -123,7 +127,7 @@ static int glue (audio_pcm_sw_alloc_resources_, TYPE) (SW *sw)
     sw->rate = st_rate_start (sw->hw->info.freq, sw->info.freq);
 #endif
     if (!sw->rate) {
-        g_free (sw->buf);
+        qemu_free (sw->buf);
         sw->buf = NULL;
         return -1;
     }
@@ -160,10 +164,10 @@ static int glue (audio_pcm_sw_init_, TYPE) (
         [sw->info.swap_endianness]
         [audio_bits_to_index (sw->info.bits)];
 
-    sw->name = g_strdup (name);
+    sw->name = qemu_strdup (name);
     err = glue (audio_pcm_sw_alloc_resources_, TYPE) (sw);
     if (err) {
-        g_free (sw->name);
+        qemu_free (sw->name);
         sw->name = NULL;
     }
     return err;
@@ -173,19 +177,19 @@ static void glue (audio_pcm_sw_fini_, TYPE) (SW *sw)
 {
     glue (audio_pcm_sw_free_resources_, TYPE) (sw);
     if (sw->name) {
-        g_free (sw->name);
+        qemu_free (sw->name);
         sw->name = NULL;
     }
 }
 
 static void glue (audio_pcm_hw_add_sw_, TYPE) (HW *hw, SW *sw)
 {
-    QLIST_INSERT_HEAD (&hw->sw_head, sw, entries);
+    LIST_INSERT_HEAD (&hw->sw_head, sw, entries);
 }
 
 static void glue (audio_pcm_hw_del_sw_, TYPE) (SW *sw)
 {
-    QLIST_REMOVE (sw, entries);
+    LIST_REMOVE (sw, entries);
 }
 
 static void glue (audio_pcm_hw_gc_, TYPE) (HW **hwp)
@@ -197,11 +201,13 @@ static void glue (audio_pcm_hw_gc_, TYPE) (HW **hwp)
 #ifdef DAC
         audio_detach_capture (hw);
 #endif
-        QLIST_REMOVE (hw, entries);
+        LIST_REMOVE (hw, entries);
         glue (s->nb_hw_voices_, TYPE) += 1;
         glue (audio_pcm_hw_free_resources_ ,TYPE) (hw);
+        BEGIN_NOSIGALRM
         glue (hw->pcm_ops->fini_, TYPE) (hw);
-        g_free (hw);
+        END_NOSIGALRM
+        qemu_free (hw);
         *hwp = NULL;
     }
 }
@@ -239,7 +245,8 @@ static HW *glue (audio_pcm_hw_add_new_, TYPE) (struct audsettings *as)
 {
     HW *hw;
     AudioState *s = &glob_audio_state;
-    struct audio_driver *drv = s->drv;
+    struct audio_driver *drv = glue(s->drv_, TYPE);
+    int  err;
 
     if (!glue (s->nb_hw_voices_, TYPE)) {
         return NULL;
@@ -263,15 +270,15 @@ static HW *glue (audio_pcm_hw_add_new_, TYPE) (struct audsettings *as)
     }
 
     hw->pcm_ops = drv->pcm_ops;
-    hw->ctl_caps = drv->ctl_caps;
-
-    QLIST_INIT (&hw->sw_head);
+    LIST_INIT (&hw->sw_head);
 #ifdef DAC
-    QLIST_INIT (&hw->cap_head);
+    LIST_INIT (&hw->cap_head);
 #endif
-    if (glue (hw->pcm_ops->init_, TYPE) (hw, as)) {
+    BEGIN_NOSIGALRM
+    err = glue (hw->pcm_ops->init_, TYPE) (hw, as);
+    END_NOSIGALRM
+    if (err)
         goto err0;
-    }
 
     if (audio_bug (AUDIO_FUNC, hw->samples <= 0)) {
         dolog ("hw->samples=%d\n", hw->samples);
@@ -292,7 +299,7 @@ static HW *glue (audio_pcm_hw_add_new_, TYPE) (struct audsettings *as)
         goto err1;
     }
 
-    QLIST_INSERT_HEAD (&s->glue (hw_head_, TYPE), hw, entries);
+    LIST_INSERT_HEAD (&s->glue (hw_head_, TYPE), hw, entries);
     glue (s->nb_hw_voices_, TYPE) -= 1;
 #ifdef DAC
     audio_attach_capture (hw);
@@ -300,9 +307,11 @@ static HW *glue (audio_pcm_hw_add_new_, TYPE) (struct audsettings *as)
     return hw;
 
  err1:
+    BEGIN_NOSIGALRM
     glue (hw->pcm_ops->fini_, TYPE) (hw);
+    END_NOSIGALRM
  err0:
-    g_free (hw);
+    qemu_free (hw);
     return NULL;
 }
 
@@ -370,7 +379,7 @@ err3:
     glue (audio_pcm_hw_del_sw_, TYPE) (sw);
     glue (audio_pcm_hw_gc_, TYPE) (&hw);
 err2:
-    g_free (sw);
+    qemu_free (sw);
 err1:
     return NULL;
 }
@@ -380,7 +389,7 @@ static void glue (audio_close_, TYPE) (SW *sw)
     glue (audio_pcm_sw_fini_, TYPE) (sw);
     glue (audio_pcm_hw_del_sw_, TYPE) (sw);
     glue (audio_pcm_hw_gc_, TYPE) (&sw->hw);
-    g_free (sw);
+    qemu_free (sw);
 }
 
 void glue (AUD_close_, TYPE) (QEMUSoundCard *card, SW *sw)
@@ -400,7 +409,7 @@ SW *glue (AUD_open_, TYPE) (
     SW *sw,
     const char *name,
     void *callback_opaque ,
-    audio_callback_fn callback_fn,
+    audio_callback_fn_t callback_fn,
     struct audsettings *as
     )
 {
@@ -424,7 +433,7 @@ SW *glue (AUD_open_, TYPE) (
         goto fail;
     }
 
-    if (audio_bug (AUDIO_FUNC, !s->drv)) {
+    if (audio_bug (AUDIO_FUNC, !glue (s->drv_, TYPE))) {
         dolog ("Can not open `%s' (no host audio driver)\n", name);
         goto fail;
     }
@@ -443,9 +452,9 @@ SW *glue (AUD_open_, TYPE) (
                SW_NAME (sw), sw->info.freq, sw->info.bits, sw->info.nchannels);
         dolog ("New %s freq %d, bits %d, channels %d\n",
                name,
-               as->freq,
-               (as->fmt == AUD_FMT_S16 || as->fmt == AUD_FMT_U16) ? 16 : 8,
-               as->nchannels);
+               freq,
+               (fmt == AUD_FMT_S16 || fmt == AUD_FMT_U16) ? 16 : 8,
+               nchannels);
 #endif
 
         if (live) {
@@ -483,30 +492,32 @@ SW *glue (AUD_open_, TYPE) (
         }
     }
 
-    sw->card = card;
-    sw->vol = nominal_volume;
-    sw->callback.fn = callback_fn;
-    sw->callback.opaque = callback_opaque;
+    if (sw) {
+        sw->card = card;
+        sw->vol = nominal_volume;
+        sw->callback.fn = callback_fn;
+        sw->callback.opaque = callback_opaque;
 
 #ifdef DAC
-    if (live) {
-        int mixed =
-            (live << old_sw->info.shift)
-            * old_sw->info.bytes_per_second
-            / sw->info.bytes_per_second;
+        if (live) {
+            int mixed =
+                (live << old_sw->info.shift)
+                * old_sw->info.bytes_per_second
+                / sw->info.bytes_per_second;
 
 #ifdef DEBUG_PLIVE
-        dolog ("Silence will be mixed %d\n", mixed);
+            dolog ("Silence will be mixed %d\n", mixed);
 #endif
-        sw->total_hw_samples_mixed += mixed;
-    }
+            sw->total_hw_samples_mixed += mixed;
+        }
 #endif
 
 #ifdef DEBUG_AUDIO
-    dolog ("%s\n", name);
-    audio_pcm_print_info ("hw", &sw->hw->info);
-    audio_pcm_print_info ("sw", &sw->info);
+        dolog ("%s\n", name);
+        audio_pcm_print_info ("hw", &sw->hw->info);
+        audio_pcm_print_info ("sw", &sw->info);
 #endif
+    }
 
     return sw;
 
@@ -539,7 +550,7 @@ uint64_t glue (AUD_get_elapsed_usec_, TYPE) (SW *sw, QEMUAudioTimeStamp *ts)
 
     cur_ts = sw->hw->ts_helper;
     old_ts = ts->old_ts;
-    /* dolog ("cur %" PRId64 " old %" PRId64 "\n", cur_ts, old_ts); */
+    /* dolog ("cur %lld old %lld\n", cur_ts, old_ts); */
 
     if (cur_ts >= old_ts) {
         delta = cur_ts - old_ts;
@@ -552,7 +563,7 @@ uint64_t glue (AUD_get_elapsed_usec_, TYPE) (SW *sw, QEMUAudioTimeStamp *ts)
         return 0;
     }
 
-    return muldiv64 (delta, sw->hw->info.freq, 1000000);
+    return (delta * sw->hw->info.freq) / 1000000;
 }
 
 #undef TYPE

@@ -2,6 +2,7 @@
 OUTPUT_FORMAT("elf64-x86-64", "elf64-x86-64", "elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
+SEARCH_DIR("/lib64"); SEARCH_DIR("/usr/lib64"); SEARCH_DIR("/usr/local/lib64");
 SECTIONS
 {
   /* Read-only sections, merged into text segment: */
@@ -35,20 +36,8 @@ SECTIONS
   .rela.got       : { *(.rela.got) }
   .rel.bss        : { *(.rel.bss .rel.bss.* .rel.gnu.linkonce.b.*) }
   .rela.bss       : { *(.rela.bss .rela.bss.* .rela.gnu.linkonce.b.*) }
-  .rel.plt      :
-  {
-    *(.rel.plt)
-    PROVIDE (__rel_iplt_start = .);
-    *(.rel.iplt)
-    PROVIDE (__rel_iplt_end = .);
-  }
-  .rela.plt       :
-  {
-    *(.rela.plt)
-    PROVIDE (__rela_iplt_start = .);
-    *(.rela.iplt)
-    PROVIDE (__rela_iplt_end = .);
-  }
+  .rel.plt        : { *(.rel.plt) }
+  .rela.plt       : { *(.rela.plt) }
   .init           :
   {
     KEEP (*(.init))
@@ -70,6 +59,8 @@ SECTIONS
   .rodata         : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
   .rodata1        : { *(.rodata1) }
   .eh_frame_hdr : { *(.eh_frame_hdr) }
+  .eh_frame       : ONLY_IF_RO { KEEP (*(.eh_frame)) }
+  .gcc_except_table   : ONLY_IF_RO { *(.gcc_except_table) }
   /* Adjust the address for the data segment.  We want to adjust up to
      the same address within the page on the next page up.  */
   . = ALIGN (0x100000) - ((0x100000 - .) & (0x100000 - 1)); . = DATA_SEGMENT_ALIGN (0x100000, 0x1000);
@@ -95,8 +86,8 @@ SECTIONS
   .data1          : { *(.data1) }
   .tdata	  : { *(.tdata .tdata.* .gnu.linkonce.td.*) }
   .tbss		  : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) }
-  .eh_frame       : { KEEP (*(.eh_frame)) }
-  .gcc_except_table   : { *(.gcc_except_table) }
+  .eh_frame       : ONLY_IF_RW { KEEP (*(.eh_frame)) }
+  .gcc_except_table   : ONLY_IF_RW { *(.gcc_except_table) }
   .dynamic        : { *(.dynamic) }
   .ctors          :
   {

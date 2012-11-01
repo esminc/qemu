@@ -3,6 +3,7 @@
  */
 OUTPUT_FORMAT("elf32-i386", "elf32-i386", "elf32-i386")
 OUTPUT_ARCH(i386)
+SEARCH_DIR(/lib); SEARCH_DIR(/usr/lib); SEARCH_DIR(/usr/local/lib); SEARCH_DIR(/usr/alpha-unknown-linux-gnu/lib);
 ENTRY(_start)
 SECTIONS
 {
@@ -39,20 +40,8 @@ SECTIONS
   .rela.fini     : { *(.rela.fini)	}
   .rel.bss       : { *(.rel.bss)		}
   .rela.bss      : { *(.rela.bss)		}
-  .rel.plt      :
-  {
-    *(.rel.plt)
-    PROVIDE (__rel_iplt_start = .);
-    *(.rel.iplt)
-    PROVIDE (__rel_iplt_end = .);
-  }
-  .rela.plt       :
-  {
-    *(.rela.plt)
-    PROVIDE (__rela_iplt_start = .);
-    *(.rela.iplt)
-    PROVIDE (__rela_iplt_end = .);
-  }
+  .rel.plt       : { *(.rel.plt)		}
+  .rela.plt      : { *(.rela.plt)		}
   .init          : { *(.init)	} =0x47ff041f
   .text      :
   {

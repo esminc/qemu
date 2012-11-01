@@ -25,38 +25,94 @@
 /* Worker routines for a PCI host controller that uses an {address,data}
    register pair to access PCI configuration space.  */
 
-#ifndef PCI_HOST_H
-#define PCI_HOST_H
+/* debug PCI */
+//#define DEBUG_PCI
 
-#include "sysbus.h"
+#ifdef DEBUG_PCI
+#define PCI_DPRINTF(fmt, ...) \
+do { printf("pci_host_data: " fmt , ## __VA_ARGS__); } while (0)
+#else
+#define PCI_DPRINTF(fmt, ...)
+#endif
 
-#define TYPE_PCI_HOST_BRIDGE "pci-host-bridge"
-#define PCI_HOST_BRIDGE(obj) \
-    OBJECT_CHECK(PCIHostState, (obj), TYPE_PCI_HOST_BRIDGE)
-
-struct PCIHostState {
-    SysBusDevice busdev;
-
-    MemoryRegion conf_mem;
-    MemoryRegion data_mem;
-    MemoryRegion mmcfg;
-    MemoryRegion *address_space;
+typedef struct {
     uint32_t config_reg;
     PCIBus *bus;
-};
+} PCIHostState;
 
-/* common internal helpers for PCI/PCIe hosts, cut off overflows */
-void pci_host_config_write_common(PCIDevice *pci_dev, uint32_t addr,
-                                  uint32_t limit, uint32_t val, uint32_t len);
-uint32_t pci_host_config_read_common(PCIDevice *pci_dev, uint32_t addr,
-                                     uint32_t limit, uint32_t len);
+static void pci_host_data_writeb(void* opaque, pci_addr_t addr, uint32_t val)
+{
+    PCIHostState *s = opaque;
 
-void pci_data_write(PCIBus *s, uint32_t addr, uint32_t val, int len);
-uint32_t pci_data_read(PCIBus *s, uint32_t addr, int len);
+    PCI_DPRINTF("writeb addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+    if (s->config_reg & (1u << 31))
+        pci_data_write(s->bus, s->config_reg | (addr & 3), val, 1);
+}
 
-extern const MemoryRegionOps pci_host_conf_le_ops;
-extern const MemoryRegionOps pci_host_conf_be_ops;
-extern const MemoryRegionOps pci_host_data_le_ops;
-extern const MemoryRegionOps pci_host_data_be_ops;
+static void pci_host_data_writew(void* opaque, pci_addr_t addr, uint32_t val)
+{
+    PCIHostState *s = opaque;
+#ifdef TARGET_WORDS_BIGENDIAN
+    val = bswap16(val);
+#endif
+    PCI_DPRINTF("writew addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+    if (s->config_reg & (1u << 31))
+        pci_data_write(s->bus, s->config_reg | (addr & 3), val, 2);
+}
 
-#endif /* PCI_HOST_H */
+static void pci_host_data_writel(void* opaque, pci_addr_t addr, uint32_t val)
+{
+    PCIHostState *s = opaque;
+#ifdef TARGET_WORDS_BIGENDIAN
+    val = bswap32(val);
+#endif
+    PCI_DPRINTF("writel addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+    if (s->config_reg & (1u << 31))
+        pci_data_write(s->bus, s->config_reg, val, 4);
+}
+
+static uint32_t pci_host_data_readb(void* opaque, pci_addr_t addr)
+{
+    PCIHostState *s = opaque;
+    uint32_t val;
+
+    if (!(s->config_reg & (1 << 31)))
+        return 0xff;
+    val = pci_data_read(s->bus, s->config_reg | (addr & 3), 1);
+    PCI_DPRINTF("readb addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+    return val;
+}
+
+static uint32_t pci_host_data_readw(void* opaque, pci_addr_t addr)
+{
+    PCIHostState *s = opaque;
+    uint32_t val;
+    if (!(s->config_reg & (1 << 31)))
+        return 0xffff;
+    val = pci_data_read(s->bus, s->config_reg | (addr & 3), 2);
+    PCI_DPRINTF("readw addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+#ifdef TARGET_WORDS_BIGENDIAN
+    val = bswap16(val);
+#endif
+    return val;
+}
+
+static uint32_t pci_host_data_readl(void* opaque, pci_addr_t addr)
+{
+    PCIHostState *s = opaque;
+    uint32_t val;
+    if (!(s->config_reg & (1 << 31)))
+        return 0xffffffff;
+    val = pci_data_read(s->bus, s->config_reg | (addr & 3), 4);
+    PCI_DPRINTF("readl addr " TARGET_FMT_plx " val %x\n",
+                (target_phys_addr_t)addr, val);
+#ifdef TARGET_WORDS_BIGENDIAN
+    val = bswap32(val);
+#endif
+    return val;
+}

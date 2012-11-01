@@ -1,0 +1,700 @@
+/* Copyright (C) 2007-2008 The Android Open Source Project
+**
+** This software is licensed under the terms of the GNU General Public
+** License version 2, as published by the Free Software Foundation, and
+** may be copied, distributed, and modified under those terms.
+**
+** This program is distributed in the hope that it will be useful,
+** but WITHOUT ANY WARRANTY; without even the implied warranty of
+** MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+** GNU General Public License for more details.
+*/
+#include "qemu-timer.h"
+#include "cpu.h"
+#include "arm_pic.h"
+#include "goldfish_device.h"
+
+#if 1 /* for next step */
+static void deviceWrite(target_phys_addr_t regAddr, uint32_t value);
+static uint32_t deviceRead(target_phys_addr_t regAddr);
+#define REG(regAddr)		deviceRead(regAddr)
+#define REGSET(regAddr, value)	deviceWrite(regAddr, value)
+static void dbg(const char*  format, ... );
+
+/* register type definition */
+#define UDC_REGMASK_ACCESS	0x0F
+#define UDC_REGMASK_TYPE	0xF0
+#define UDC_REGAC_READ		0x01
+#define UDC_REGAC_WRITE		0x02
+#define UDC_REGAC_RW		0x04
+#define UDC_REGTYPE_NORMAL	0x10
+#define UDC_REGTYPE_SFIFO	0x20	/* single fifo */
+#define UDC_REGTYPE_DFIFO	0x40	/* double fifo */
+
+/* register type accesor  */
+#define UDC_REGAC(type)		((type)&UDC_REGMASK_ACCESS)
+#define UDC_REGTYPE(type)	((type)&UDC_REGMASK_TYPE)
+
+/* register definition */
+#define MAX_REGISTERS			1024
+#if 0
+#define UDC_REGSIZE		(sizeof(target_phys_addr_t))
+#define UDC_REGSIZE_BIT		(UDC_REGSIZE >> 2)
+#else
+#define UDC_REGSIZE_BIT		(0)
+#endif
+#define UDC_REG2OFF(regAddr)	(regAddr >> UDC_REGSIZE_BIT)
+#define UDC_OFF2REG(off)	(off << UDC_REGSIZE_BIT)
+
+struct udc_deviceRegister {
+	int	type;	/* register type */
+	void	*value; /* register value */
+};
+#define UDC_FIFO_SIZE	1024
+struct udc_fifoValue {
+	int count;	  /* remain size */
+	int countRegAddr;
+	int readOff;
+	int writeOff;
+	char values[UDC_FIFO_SIZE];
+};
+/* for cast access */
+struct udc_doubleFifoValue {
+	struct udc_fifoValue read;
+	struct udc_fifoValue write;
+};
+
+#define OP_READ		0
+#define OP_WRITE	1
+#define FIFOSET(f, reg, op) do {					\
+	if (UDC_REGTYPE((reg)->type) == UDC_REGTYPE_SFIFO) {		\
+		(f) = (struct udc_fifoValue*)((reg)->value);		\
+	} else {							\
+		struct udc_doubleFifoValue *_p;				\
+		_p = (struct udc_doubleFifoValue*)((reg)->value);	\
+		if ((op) == OP_READ) {					\
+			(f) = (struct udc_fifoValue*)(&_p->read);	\
+		} else {						\
+			(f) = (struct udc_fifoValue*)(&_p->write);	\
+		}							\
+	}								\
+} while (0)
+
+
+static char fifoRead(struct udc_fifoValue *fifo)
+{
+	char ret;
+	if (fifo->count <= 0) {
+		return 0;
+	}
+
+	ret = fifo->values[fifo->readOff];
+	fifo->count--;
+	if (fifo->countRegAddr) {
+		REGSET(fifo->countRegAddr, fifo->count);
+	}
+
+	/* ringbuffer */
+	if (fifo->readOff == (UDC_FIFO_SIZE - 1)) {
+		fifo->readOff = 0;
+	} else {
+		fifo->readOff++;
+	}
+	return ret;
+}
+static void fifoWrite(struct udc_fifoValue *fifo, char value)
+{
+	dbg("fifoWrite:count=0x%x\n", fifo->count);
+	if (fifo->count >= UDC_FIFO_SIZE) {
+		return;
+	}
+	fifo->values[fifo->writeOff] = value;
+	fifo->count++;
+	dbg("fifoWrite:countRegAddr=0x%x\n", fifo->countRegAddr);
+	if (fifo->countRegAddr) {
+		REGSET(fifo->countRegAddr, fifo->count);
+	}
+	dbg("fifoWrite:countReg=0x%x\n", REG(fifo->countRegAddr));
+
+	/* ringbuffer */
+	if (fifo->writeOff == (UDC_FIFO_SIZE - 1)) {
+		fifo->writeOff = 0;
+	} else {
+		fifo->writeOff++;
+	}
+}
+
+static struct udc_deviceRegister udc_deviceRegister[MAX_REGISTERS];
+
+/* register operations */
+
+#define CHECK_OP_READ	0
+#define CHECK_OP_WRITE	1
+/*
+ * ok: 1
+ * ng: 0
+ */
+static int isAccessOK(int type, int op)
+{
+	int ret = 1;
+	/* access check */
+	switch (type) {
+	case UDC_REGAC_RW:
+		break;
+	case UDC_REGAC_READ:
+		if (op == CHECK_OP_WRITE) {
+			ret = 0;
+		}
+		break;
+	case UDC_REGAC_WRITE:
+		if (op == CHECK_OP_READ) {
+			ret = 0;
+		}
+		break;
+	defaults:
+		ret = 0; /* BUG */
+	}
+	return ret;
+}
+#if 1
+/*
+ * read/write　は、ドライバ側で設定するっぽい。不要なチェックか？
+ */
+#define GUESTOS_ACCESS_OK(type, op)	(1)
+#else
+#define GUESTOS_ACCESS_OK(type, op)	(isAccessOK(type, op))
+#endif
+static uint32_t guestOSRead(target_phys_addr_t regAddr)
+{
+	int off = UDC_REG2OFF(regAddr);
+	struct udc_fifoValue *fifo;
+
+	//dbg("guestOSRead:1:off=%d\n", off);
+	if (!GUESTOS_ACCESS_OK(UDC_REGAC(udc_deviceRegister[off].type), CHECK_OP_READ)) {
+		return 0;
+	}
+	//dbg("guestOSRead:2\n");
+	if (UDC_REGTYPE(udc_deviceRegister[off].type) == UDC_REGTYPE_NORMAL) {
+		return (uint32_t)udc_deviceRegister[off].value;
+	}
+	//dbg("guestOSRead:3\n");
+	/* for fifo read */
+	if (udc_deviceRegister[off].value == NULL) { /* sanity check */
+		return 0;
+	}
+	//dbg("guestOSRead:4\n");
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_READ);
+	return fifoRead(fifo);
+}
+
+static void guestOSWrite(target_phys_addr_t regAddr, uint32_t value)
+{
+	int off = UDC_REG2OFF(regAddr);
+	struct udc_fifoValue *fifo;
+
+	//dbg("guestOSWrite:regAddr=0x%x value=0x%x\n", regAddr, value);
+	if (!GUESTOS_ACCESS_OK(UDC_REGAC(udc_deviceRegister[off].type), CHECK_OP_WRITE)) {
+		return;
+	}
+	if (UDC_REGTYPE(udc_deviceRegister[off].type) == UDC_REGTYPE_NORMAL) {
+		udc_deviceRegister[off].value = (void*)value;
+		return;
+	}
+	/* for fifo write */
+	if (udc_deviceRegister[off].value == NULL) { /* sanity check */
+		return;
+	}
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifoWrite(fifo, value);
+	return;
+}
+
+static uint32_t deviceRead(target_phys_addr_t regAddr)
+{
+	int off = UDC_REG2OFF(regAddr);
+	struct udc_fifoValue *fifo;
+
+	if (UDC_REGTYPE(udc_deviceRegister[off].type) == UDC_REGTYPE_NORMAL) {
+		return (uint32_t)udc_deviceRegister[off].value;
+	}
+	/* for fifo read */
+	if (udc_deviceRegister[off].value == NULL) { /* sanity check */
+		return 0;
+	}
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	return fifoRead(fifo);
+}
+
+static void deviceWrite(target_phys_addr_t regAddr, uint32_t value)
+{
+	int off = UDC_REG2OFF(regAddr);
+	struct udc_fifoValue *fifo;
+
+	//dbg("deviceWrite:1\n");
+	if (UDC_REGTYPE(udc_deviceRegister[off].type) == UDC_REGTYPE_NORMAL) {
+		udc_deviceRegister[off].value = (void*)value;
+		return;
+	}
+	//dbg("deviceWrite:2\n");
+	/* for fifo write */
+	if (udc_deviceRegister[off].value == NULL) { /* sanity check */
+		return;
+	}
+	//dbg("deviceWrite:3\n");
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_READ);
+	fifoWrite(fifo, value);
+	return;
+}
+
+#endif
+
+struct usbgadget_state {
+    struct goldfish_device dev;
+    QEMUTimer *timer;
+};
+
+static struct usbgadget_state usbgadget_state = {
+    .dev = {
+        .name = "goldfish_usbgadget",
+        .id = -1,
+        .size = 0x1000,
+        .irq_count = 1,
+    }
+};
+#if 1 /* TEST */
+static void *console_client = NULL;
+extern void  control_control_write(void* client, const char*  buff, int  len );
+
+static void dbg(const char*  format, ... )
+{
+    static char  temp[1024];
+    va_list      args;
+
+    va_start(args, format);
+    vsnprintf( temp, sizeof(temp), format, args );
+    va_end(args);
+
+    temp[ sizeof(temp)-1 ] = 0;
+
+    if (console_client)
+    	control_control_write(console_client, temp, -1 );
+}
+
+#define  GOLDFISH_TIMER_SAVE_VERSION  1
+#define USB_REQ_GET_STATUS              0x00
+#define USB_REQ_CLEAR_FEATURE           0x01
+#define USB_REQ_SET_FEATURE             0x03
+#define USB_REQ_SET_ADDRESS             0x05
+#define USB_REQ_GET_DESCRIPTOR          0x06
+#define USB_REQ_SET_DESCRIPTOR          0x07
+#define USB_REQ_GET_CONFIGURATION       0x08
+#define USB_REQ_SET_CONFIGURATION       0x09
+#define USB_REQ_GET_INTERFACE           0x0A
+#define USB_REQ_SET_INTERFACE           0x0B
+#define USB_REQ_SYNCH_FRAME             0x0C
+
+/*
+ * USB directions
+ *
+ * This bit flag is used in endpoint descriptors' bEndpointAddress field.
+ * It's also one of three fields in control requests bRequestType.
+ */
+#define USB_DIR_OUT                     0               /* to device */
+#define USB_DIR_IN                      0x80            /* to host */
+/*
+ * USB types, the second of three bRequestType fields
+ */
+#define USB_TYPE_MASK                   (0x03 << 5)
+#define USB_TYPE_STANDARD               (0x00 << 5)
+#define USB_TYPE_CLASS                  (0x01 << 5)
+#define USB_TYPE_VENDOR                 (0x02 << 5)
+#define USB_TYPE_RESERVED               (0x03 << 5)
+
+/*
+ * USB recipients, the third of three bRequestType fields
+ */
+#define USB_RECIP_MASK                  0x1f
+#define USB_RECIP_DEVICE                0x00
+#define USB_RECIP_INTERFACE             0x01
+#define USB_RECIP_ENDPOINT              0x02
+#define USB_RECIP_OTHER                 0x03
+
+/*
+ * Descriptor types ... USB 2.0 spec table 9.5
+ */
+#define USB_DT_DEVICE                   0x01
+#define USB_DT_CONFIG                   0x02
+#define USB_DT_STRING                   0x03
+#define USB_DT_INTERFACE                0x04
+#define USB_DT_ENDPOINT                 0x05
+#define USB_DT_DEVICE_QUALIFIER         0x06
+#define USB_DT_OTHER_SPEED_CONFIG       0x07
+#define USB_DT_INTERFACE_POWER          0x08
+/* these are from a minor usb 2.0 revision (ECN) */
+#define USB_DT_OTG                      0x09
+#define USB_DT_DEBUG                    0x0a
+#define USB_DT_INTERFACE_ASSOCIATION    0x0b
+/* these are from the Wireless USB spec */
+#define USB_DT_SECURITY                 0x0c
+#define USB_DT_KEY                      0x0d
+#define USB_DT_ENCRYPTION_TYPE          0x0e
+#define USB_DT_BOS                      0x0f
+#define USB_DT_DEVICE_CAPABILITY        0x10
+#define USB_DT_WIRELESS_ENDPOINT_COMP   0x11
+#define USB_DT_WIRE_ADAPTER             0x21
+#define USB_DT_RPIPE                    0x22
+#define USB_DT_CS_RADIO_CONTROL         0x23
+
+typedef unsigned char __u8;
+typedef unsigned short __le16;
+struct usb_ctrlrequest {
+        __u8 bRequestType;
+        __u8 bRequest;
+        __le16 wValue;
+        __le16 wIndex;
+        __le16 wLength;
+} __attribute__ ((packed));
+static void createGET_DESCRIPTOR(struct usb_ctrlrequest *req, __le16 wValue)
+{
+	req->bRequestType = 0;
+	req->bRequestType |= USB_DIR_IN;
+	req->bRequestType |= USB_TYPE_STANDARD;
+	req->bRequestType |= USB_RECIP_DEVICE;
+	req->bRequest = USB_REQ_GET_DESCRIPTOR;
+	req->wValue = wValue;
+	req->wIndex = 0;
+	req->wLength = 0x12;
+}
+static void createSET_CONFIGURATION(struct usb_ctrlrequest *req, __le16 wValue)
+{
+	req->bRequestType = 0;
+	req->bRequestType |= USB_DIR_IN;
+	req->bRequestType |= USB_TYPE_STANDARD;
+	req->bRequestType |= USB_RECIP_DEVICE;
+	req->bRequest = USB_REQ_SET_CONFIGURATION;
+	req->wValue = wValue;
+	req->wIndex = 0;
+	req->wLength = 0;
+}
+
+#define GOLDFISH_UDC_USB_INT_REG	0x0000 /* 0 */
+#define GOLDFISH_UDC_EP_INT_REG         0x0001 /* 4 */
+
+#define GOLDFISH_UDC_EP0_FIFO_CNT_REG	0x0010 /* 64  */
+#define GOLDFISH_UDC_EP1_FIFO_CNT_REG	0x0011
+#define GOLDFISH_UDC_EP2_FIFO_CNT_REG	0x0012
+#define GOLDFISH_UDC_EP3_FIFO_CNT_REG	0x0013
+#define GOLDFISH_UDC_EP4_FIFO_CNT_REG	0x0014
+#define GOLDFISH_UDC_EP5_FIFO_CNT_REG	0x0015
+#define GOLDFISH_UDC_EP6_FIFO_CNT_REG	0x0016
+#define GOLDFISH_UDC_EP7_FIFO_CNT_REG	0x0017
+
+#define GOLDFISH_UDC_EP0_FIFO_REG	0x0020
+#define GOLDFISH_UDC_EP1_FIFO_REG	0x0021
+#define GOLDFISH_UDC_EP2_FIFO_REG	0x0022
+#define GOLDFISH_UDC_EP3_FIFO_REG	0x0023
+#define GOLDFISH_UDC_EP4_FIFO_REG	0x0024
+#define GOLDFISH_UDC_EP5_FIFO_REG	0x0025
+#define GOLDFISH_UDC_EP6_FIFO_REG	0x0026
+#define GOLDFISH_UDC_EP7_FIFO_REG	0x0027
+
+#define GOLDFISH_UDC_EP0_CSR_REG	0x0030
+#define GOLDFISH_UDC_EP1_CSR_REG	0x0031
+#define GOLDFISH_UDC_EP2_CSR_REG	0x0032
+#define GOLDFISH_UDC_EP3_CSR_REG	0x0033
+#define GOLDFISH_UDC_EP4_CSR_REG	0x0034
+#define GOLDFISH_UDC_EP5_CSR_REG	0x0035
+#define GOLDFISH_UDC_EP6_CSR_REG	0x0036
+#define GOLDFISH_UDC_EP7_CSR_REG	0x0037
+
+/* 
+ * GOLDFISH_UDC_USB_INT_REG 
+ */
+#define GOLDFISH_UDC_USB_INT_VBUS_ON    0x01
+#define GOLDFISH_UDC_USB_INT_VBUS_OFF   0x02
+
+/* 
+ * GOLDFISH_UDC_EP_INT_REG 
+ */
+#define GOLDFISH_UDC_INT_EP0            0x01
+
+#define GOLDFISH_FIFOSIZE		1024
+#define GOLDFISH_FIFO_NUM		16
+
+
+#define GOLDFISH_UDC_EP0_CSR_OPKRDY      (1<<0)
+#define GOLDFISH_UDC_EP0_CSR_IPKRDY      (1<<1)
+#define GOLDFISH_UDC_EP0_CSR_SENTSTL     (1<<2)
+#define GOLDFISH_UDC_EP0_CSR_DE          (1<<3)
+#define GOLDFISH_UDC_EP0_CSR_SE          (1<<4)
+#define GOLDFISH_UDC_EP0_CSR_SENDSTL     (1<<5)
+#define GOLDFISH_UDC_EP0_CSR_SOPKTRDY    (1<<6)
+#define GOLDFISH_UDC_EP0_CSR_SSE (1<<7)
+
+
+static uint32_t goldfish_udc_usb_register[MAX_REGISTERS];
+static __u8 goldfish_udc_usb_fifo[GOLDFISH_FIFO_NUM][GOLDFISH_FIFOSIZE];
+static uint32_t goldfish_udc_usb_fifo_off[GOLDFISH_FIFO_NUM];
+
+static uint32_t goldfish_udc_usb_fifo_start_ep0w;
+static uint32_t goldfish_udc_usb_fifo_cnt_ep0w;
+static uint32_t goldfish_udc_usb_fifo_off_ep0w;
+static __u8 goldfish_udc_usb_fifo_ep0w[GOLDFISH_FIFOSIZE];
+
+#define NEW
+#ifdef NEW
+static void sendData(target_phys_addr_t regAddr, char *p, int len)
+{
+	int i;
+	for (i = 0; i < len; i++) {
+		//dbg("goldfish_usbgadget_test:i=%d\n", i);
+		REGSET(regAddr, p[i]);
+	}
+}
+#endif
+void goldfish_usbgadget_test(void *p, char *arg)
+{
+	struct usb_ctrlrequest reqData;
+	struct usb_ctrlrequest *req;
+	if (p) {
+		console_client = p;
+	}
+	dbg("goldfish_usbgadget_test:irq=%d\n", usbgadget_state.dev.irq);
+
+#ifdef NEW
+	req = &reqData;
+#else
+	req = (struct usb_ctrlrequest*)&goldfish_udc_usb_fifo[0][0];
+#endif
+	if (arg) {
+		if (!strcmp(arg, "setconfig")) {
+			createSET_CONFIGURATION(req, 1);
+#ifdef NEW
+			sendData(GOLDFISH_UDC_EP0_FIFO_REG, (char*)req, sizeof(*req));
+			REGSET(GOLDFISH_UDC_EP_INT_REG, 
+				REG(GOLDFISH_UDC_EP_INT_REG)|GOLDFISH_UDC_INT_EP0);
+#else
+			goldfish_udc_usb_register[GOLDFISH_UDC_EP0_FIFO_CNT_REG] = 8;
+			goldfish_udc_usb_register[GOLDFISH_UDC_EP_INT_REG] |= GOLDFISH_UDC_INT_EP0;
+#endif
+		} else if (!strcmp(arg, "getdev")) {
+			createGET_DESCRIPTOR(req, (USB_DT_DEVICE << 8));
+#ifdef NEW
+			sendData(GOLDFISH_UDC_EP0_FIFO_REG, (char*)req, sizeof(*req));
+			REGSET(GOLDFISH_UDC_EP_INT_REG, 
+				REG(GOLDFISH_UDC_EP_INT_REG)|GOLDFISH_UDC_INT_EP0);
+#else
+			goldfish_udc_usb_register[GOLDFISH_UDC_EP0_FIFO_CNT_REG] = 8;
+			goldfish_udc_usb_register[GOLDFISH_UDC_EP_INT_REG] |= GOLDFISH_UDC_INT_EP0;
+#endif
+		} else if (!strcmp(arg, "vbuson")) {
+#ifdef NEW
+			REGSET(GOLDFISH_UDC_USB_INT_REG, 
+				REG(GOLDFISH_UDC_USB_INT_REG)|GOLDFISH_UDC_USB_INT_VBUS_ON);
+			dbg("vbuson:reg=0x%x\n", REG(GOLDFISH_UDC_EP_INT_REG));
+#else
+			goldfish_udc_usb_register[GOLDFISH_UDC_USB_INT_REG] |= GOLDFISH_UDC_USB_INT_VBUS_ON;
+#endif
+		} else if (!strcmp(arg, "vbusoff")) {
+#ifdef NEW
+			REGSET(GOLDFISH_UDC_USB_INT_REG, 
+				REG(GOLDFISH_UDC_USB_INT_REG)|GOLDFISH_UDC_USB_INT_VBUS_OFF);
+			dbg("vbusoff:reg=0x%x\n", REG(GOLDFISH_UDC_EP_INT_REG));
+#else
+			goldfish_udc_usb_register[GOLDFISH_UDC_USB_INT_REG] |= GOLDFISH_UDC_USB_INT_VBUS_OFF;
+#endif
+		} else {
+			dbg("not supported command\n");
+		}
+		goldfish_device_set_irq(&usbgadget_state.dev, 0, 1);
+	}
+}
+#endif /* TEST */
+
+static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset)
+{
+	struct usbgadget_state *s = (struct usbgadget_state *)opaque;
+	//dbg("goldfish_usbgadget_read:offset=0x%x\n", offset);
+#ifdef NEW
+	return guestOSRead(offset);
+#else
+	if (offset == GOLDFISH_UDC_EP0_FIFO_REG) {
+		int *cnt = &goldfish_udc_usb_register[GOLDFISH_UDC_EP0_FIFO_CNT_REG];
+		int *off = &goldfish_udc_usb_fifo_off[0];
+		__u8 ret = goldfish_udc_usb_fifo[0][*off];
+		*cnt = *cnt - 1;
+		*off = *off + 1;
+		if (*off == GOLDFISH_FIFOSIZE) {
+			*off = 0;
+		}
+		if (*cnt == 0) {
+			*off = 0;
+		}
+		dbg("goldfish_usbgadget_read:cnt=%d off=%d ret=0x%x\n", *cnt, *off, ret);
+		return ret;
+	} else {
+		dbg("goldfish_usbgadget_read:ret=0x%x\n", goldfish_udc_usb_register[offset]);
+		return goldfish_udc_usb_register[offset];
+	}
+#endif
+}
+
+static void goldfish_usbgadget_write(void *opaque, target_phys_addr_t offset, uint32_t value)
+{
+	int status;
+	int int_status;
+	int ep_status;
+	struct usbgadget_state *s = (struct usbgadget_state *)opaque;
+	dbg("goldfish_usbgadget_write:offset=0x%x value=0x%x\n", offset, value);
+
+#ifdef NEW
+	if (offset == GOLDFISH_UDC_USB_INT_REG || 
+		offset ==GOLDFISH_UDC_EP_INT_REG) {
+		status = REG(offset);
+		status &= ~value;
+		dbg("goldfish_usbgadget_write:status=0x%x\n", status);
+		guestOSWrite(offset, status);
+		if (!REG(GOLDFISH_UDC_USB_INT_REG)
+			&& !REG(GOLDFISH_UDC_EP_INT_REG)) {
+			dbg("goldfish_usbgadget_write:irq clear\n");
+			goldfish_device_set_irq(&usbgadget_state.dev, 0, 0);
+		}
+	} else {
+		guestOSWrite(offset, value);
+	}
+#else
+	if (offset == GOLDFISH_UDC_USB_INT_REG || 
+		offset ==GOLDFISH_UDC_EP_INT_REG) {
+		goldfish_udc_usb_register[offset] &= ~value;
+		dbg("goldfish_usbgadget_write:register[0x%x]=0x%x\n", offset, 
+			goldfish_udc_usb_register[offset]);
+		// Interrupt clear if all interrupt factors are cleared.
+		if (!goldfish_udc_usb_register[GOLDFISH_UDC_USB_INT_REG]
+			&& !goldfish_udc_usb_register[GOLDFISH_UDC_EP_INT_REG]) {
+			goldfish_device_set_irq(&usbgadget_state.dev, 0, 0);
+		}
+	} else if (offset == GOLDFISH_UDC_EP0_FIFO_REG) {
+		int *cnt = &goldfish_udc_usb_fifo_cnt_ep0w;
+		int *off = &goldfish_udc_usb_fifo_off_ep0w;
+		__u8 *bufp = &goldfish_udc_usb_fifo_ep0w[*off];
+
+		*bufp = (__u8)value;
+		*cnt = *cnt + 1;
+		*off = *off + 1;
+		if (*off == GOLDFISH_FIFOSIZE) {
+			*off = 0;
+		}
+		dbg("goldfish_usbgadget_write:cnt=%d off=%d\n", *cnt, *off);
+	} else if (offset == GOLDFISH_UDC_EP0_CSR_REG) {
+		goldfish_udc_usb_register[offset] = value;
+		dbg("goldfish_usbgadget_write:EP0_CSR_REG:register[0x%x]=0x%x\n", offset, 
+			goldfish_udc_usb_register[offset]);
+	} else {
+		dbg("goldfish_usbgadget_write:other:register[0x%x]=0x%x\n", offset, 
+			goldfish_udc_usb_register[offset]);
+	}
+#endif
+}
+
+static void  goldfish_usbgadget_save(QEMUFile*  f, void*  opaque)
+{
+	struct usbgadget_state*  s   = opaque;
+	dbg("goldfish_usbgadget_save:enter\n");
+}
+
+static int  goldfish_usbgadget_load(QEMUFile*  f, void*  opaque, int  version_id)
+{
+	struct usbgadget_state*  s   = opaque;
+	dbg("goldfish_usbgadget_load:version_id=%d\n", version_id);
+	return 0;
+}
+
+static CPUReadMemoryFunc *goldfish_usbgadget_readfn[] = {
+    goldfish_usbgadget_read,
+    goldfish_usbgadget_read,
+    goldfish_usbgadget_read
+};
+
+static CPUWriteMemoryFunc *goldfish_usbgadget_writefn[] = {
+    goldfish_usbgadget_write,
+    goldfish_usbgadget_write,
+    goldfish_usbgadget_write
+};
+
+#define UDC_FIFO_NUM	10
+static struct udc_fifoValue  udc_fifo[UDC_FIFO_NUM];
+static void init_udc_deviceRegister(void)
+{
+	int i;
+	int off;
+	struct udc_fifoValue *fifo;
+	for (i = 0; i < MAX_REGISTERS; i++) {
+		udc_deviceRegister[i].type = UDC_REGAC_RW|UDC_REGTYPE_NORMAL;
+		udc_deviceRegister[i].value = NULL;
+	}
+	/* EP0 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP0_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_DFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[0];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_READ);
+	fifo->countRegAddr = GOLDFISH_UDC_EP0_FIFO_CNT_REG;
+	/* EP1 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP1_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[2];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP1_FIFO_CNT_REG;
+	/* EP2 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP2_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[3];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP2_FIFO_CNT_REG;
+	/* EP3 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP3_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[4];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP3_FIFO_CNT_REG;
+	/* EP4 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP4_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[5];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP4_FIFO_CNT_REG;
+	/* EP5 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP5_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[6];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP5_FIFO_CNT_REG;
+	/* EP6 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP6_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[7];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP6_FIFO_CNT_REG;
+	/* EP7 */
+	off = UDC_REG2OFF(GOLDFISH_UDC_EP7_FIFO_REG);
+	udc_deviceRegister[off].type = UDC_REGAC_RW|UDC_REGTYPE_SFIFO;
+	udc_deviceRegister[off].value = (void*)&udc_fifo[8];
+	FIFOSET(fifo, &udc_deviceRegister[off], OP_WRITE);
+	fifo->countRegAddr = GOLDFISH_UDC_EP7_FIFO_CNT_REG;
+
+}
+void goldfish_usbgadget_init(uint32_t usbgadgetbase, int usbgadgetirq)
+{
+	init_udc_deviceRegister();
+	usbgadget_state.dev.base = usbgadgetbase;
+	usbgadget_state.dev.irq = usbgadgetirq;
+	goldfish_device_add(&usbgadget_state.dev, 
+				goldfish_usbgadget_readfn, 
+				goldfish_usbgadget_writefn, 
+				&usbgadget_state);
+	register_savevm( "goldfish_usbgadget", 0, 
+			GOLDFISH_TIMER_SAVE_VERSION,
+			goldfish_usbgadget_save, 
+			goldfish_usbgadget_load, 
+			&usbgadget_state);
+}
+

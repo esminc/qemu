@@ -14,7 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA  02110-1301 USA
  */
 #include <stdlib.h>
 #include <stdio.h>
@@ -46,7 +47,6 @@ static inline const argtype *thunk_type_next(const argtype *type_ptr)
     case TYPE_LONG:
     case TYPE_ULONG:
     case TYPE_PTRVOID:
-    case TYPE_OLDDEVT:
         return type_ptr;
     case TYPE_PTR:
         return thunk_type_next_ptr(type_ptr);
@@ -189,33 +189,6 @@ const argtype *thunk_convert(void *dst, const void *src,
 #else
 #warning unsupported conversion
 #endif
-    case TYPE_OLDDEVT:
-    {
-        uint64_t val = 0;
-        switch (thunk_type_size(type_ptr - 1, !to_host)) {
-        case 2:
-            val = *(uint16_t *)src;
-            break;
-        case 4:
-            val = *(uint32_t *)src;
-            break;
-        case 8:
-            val = *(uint64_t *)src;
-            break;
-        }
-        switch (thunk_type_size(type_ptr - 1, to_host)) {
-        case 2:
-            *(uint16_t *)dst = tswap16(val);
-            break;
-        case 4:
-            *(uint32_t *)dst = tswap32(val);
-            break;
-        case 8:
-            *(uint64_t *)dst = tswap64(val);
-            break;
-        }
-        break;
-    }
     case TYPE_ARRAY:
         {
             int array_length, i, dst_size, src_size;

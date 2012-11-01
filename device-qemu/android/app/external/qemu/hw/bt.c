@@ -14,7 +14,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "qemu-common.h"
@@ -54,7 +55,7 @@ static void bt_dummy_lmp_acl_resp(struct bt_link_s *link,
 /* Slaves that don't hold any additional per link state can use these */
 static void bt_dummy_lmp_connection_request(struct bt_link_s *req)
 {
-    struct bt_link_s *link = g_malloc0(sizeof(struct bt_link_s));
+    struct bt_link_s *link = qemu_mallocz(sizeof(struct bt_link_s));
 
     link->slave = req->slave;
     link->host = req->host;
@@ -65,13 +66,13 @@ static void bt_dummy_lmp_connection_request(struct bt_link_s *req)
 
 static void bt_dummy_lmp_disconnect_slave(struct bt_link_s *link)
 {
-    g_free(link);
+    qemu_free(link);
 }
 
 static void bt_dummy_destroy(struct bt_device_s *device)
 {
     bt_device_done(device);
-    g_free(device);
+    qemu_free(device);
 }
 
 static int bt_dev_idx = 0;

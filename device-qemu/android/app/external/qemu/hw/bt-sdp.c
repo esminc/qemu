@@ -14,7 +14,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "qemu-common.h"
@@ -159,7 +160,7 @@ static ssize_t sdp_svc_search(struct bt_l2cap_sdp_state_s *sdp,
 
     if (len < 3)
         return -SDP_INVALID_SYNTAX;
-    max = (req[0] << 8) | req[1];
+    end = (req[0] << 8) | req[1];
     req += 2;
     len -= 2;
 
@@ -171,7 +172,7 @@ static ssize_t sdp_svc_search(struct bt_l2cap_sdp_state_s *sdp,
     } else
         start = 0;
 
-    if (len > 1)
+    if (len > 1);
         return -SDP_INVALID_SYNTAX;
 
     /* Output the results */
@@ -567,12 +568,12 @@ static void bt_l2cap_sdp_close_ch(void *opaque)
     int i;
 
     for (i = 0; i < sdp->services; i ++) {
-        g_free(sdp->service_list[i].attribute_list->pair);
-        g_free(sdp->service_list[i].attribute_list);
-        g_free(sdp->service_list[i].uuid);
+        qemu_free(sdp->service_list[i].attribute_list->pair);
+        qemu_free(sdp->service_list[i].attribute_list);
+        qemu_free(sdp->service_list[i].uuid);
     }
-    g_free(sdp->service_list);
-    g_free(sdp);
+    qemu_free(sdp->service_list);
+    qemu_free(sdp);
 }
 
 struct sdp_def_service_s {
@@ -709,10 +710,10 @@ static void sdp_service_record_build(struct sdp_service_record_s *record,
     }
     record->uuids = 1 << ffs(record->uuids - 1);
     record->attribute_list =
-            g_malloc0(record->attributes * sizeof(*record->attribute_list));
+            qemu_mallocz(record->attributes * sizeof(*record->attribute_list));
     record->uuid =
-            g_malloc0(record->uuids * sizeof(*record->uuid));
-    data = g_malloc(len);
+            qemu_mallocz(record->uuids * sizeof(*record->uuid));
+    data = qemu_malloc(len);
 
     record->attributes = 0;
     uuid = record->uuid;
@@ -753,7 +754,7 @@ static void sdp_service_db_build(struct bt_l2cap_sdp_state_s *sdp,
     while (service[sdp->services])
         sdp->services ++;
     sdp->service_list =
-            g_malloc0(sdp->services * sizeof(*sdp->service_list));
+            qemu_mallocz(sdp->services * sizeof(*sdp->service_list));
 
     sdp->services = 0;
     while (*service) {
@@ -786,11 +787,11 @@ static void sdp_service_db_build(struct bt_l2cap_sdp_state_s *sdp,
         .type       = SDP_DTYPE_UUID | SDP_DSIZE_16,	\
         .value.uint = val,				\
     },
-#define SDP_TRUE	{				\
+#define TRUE	{				\
         .type       = SDP_DTYPE_BOOL | SDP_DSIZE_1,	\
         .value.uint = 1,				\
     },
-#define SDP_FALSE	{				\
+#define FALSE	{				\
         .type       = SDP_DTYPE_BOOL | SDP_DSIZE_1,	\
         .value.uint = 0,				\
     },
@@ -834,7 +835,7 @@ SERVICE(hid,
     ATTRIBUTE(DOC_URL,         URL("http://bellard.org/qemu/user-doc.html"))
     ATTRIBUTE(SVCNAME_PRIMARY, STRING("QEMU Bluetooth HID"))
     ATTRIBUTE(SVCDESC_PRIMARY, STRING("QEMU Keyboard/Mouse"))
-    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU"))
+    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU " QEMU_VERSION))
 
     /* Profile specific */
     ATTRIBUTE(DEVICE_RELEASE_NUMBER,	UINT16(0x0091)) /* Deprecated, remove */
@@ -842,8 +843,8 @@ SERVICE(hid,
     /* TODO: extract from l2cap_device->device.class[0] */
     ATTRIBUTE(DEVICE_SUBCLASS,		UINT8(0x40))
     ATTRIBUTE(COUNTRY_CODE,		UINT8(0x15))
-    ATTRIBUTE(VIRTUAL_CABLE,		SDP_TRUE)
-    ATTRIBUTE(RECONNECT_INITIATE,	SDP_FALSE)
+    ATTRIBUTE(VIRTUAL_CABLE,		TRUE)
+    ATTRIBUTE(RECONNECT_INITIATE,	FALSE)
     /* TODO: extract from hid->usbdev->report_desc */
     ATTRIBUTE(DESCRIPTOR_LIST,		LIST(
         LIST(UINT8(0x22) ARRAY(
@@ -883,12 +884,12 @@ SERVICE(hid,
     ATTRIBUTE(LANG_ID_BASE_LIST,	LIST(
         LIST(UINT16(0x0409) UINT16(0x0100))
     ))
-    ATTRIBUTE(SDP_DISABLE,		SDP_FALSE)
-    ATTRIBUTE(BATTERY_POWER,		SDP_TRUE)
-    ATTRIBUTE(REMOTE_WAKEUP,		SDP_TRUE)
-    ATTRIBUTE(BOOT_DEVICE,		SDP_TRUE)	/* XXX: untested */
+    ATTRIBUTE(SDP_DISABLE,		FALSE)
+    ATTRIBUTE(BATTERY_POWER,		TRUE)
+    ATTRIBUTE(REMOTE_WAKEUP,		TRUE)
+    ATTRIBUTE(BOOT_DEVICE,		TRUE)	/* XXX: untested */
     ATTRIBUTE(SUPERVISION_TIMEOUT,	UINT16(0x0c80))
-    ATTRIBUTE(NORMALLY_CONNECTABLE,	SDP_TRUE)
+    ATTRIBUTE(NORMALLY_CONNECTABLE,	TRUE)
     ATTRIBUTE(PROFILE_VERSION,		UINT16(0x0100))
 )
 
@@ -908,7 +909,7 @@ SERVICE(sdp,
         LIST(UUID128(SDP_SERVER_PROFILE_ID) UINT16(0x0100))
     ))
     ATTRIBUTE(DOC_URL,         URL("http://bellard.org/qemu/user-doc.html"))
-    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU"))
+    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU " QEMU_VERSION))
 
     /* Profile specific */
     ATTRIBUTE(VERSION_NUM_LIST, LIST(UINT16(0x0100)))
@@ -931,18 +932,18 @@ SERVICE(pnp,
         LIST(UUID128(PNP_INFO_PROFILE_ID) UINT16(0x0100))
     ))
     ATTRIBUTE(DOC_URL,         URL("http://bellard.org/qemu/user-doc.html"))
-    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU"))
+    ATTRIBUTE(SVCPROV_PRIMARY, STRING("QEMU " QEMU_VERSION))
 
     /* Profile specific */
     ATTRIBUTE(SPECIFICATION_ID, UINT16(0x0100))
     ATTRIBUTE(VERSION,         UINT16(0x0100))
-    ATTRIBUTE(PRIMARY_RECORD,  SDP_TRUE)
+    ATTRIBUTE(PRIMARY_RECORD,  TRUE)
 )
 
 static int bt_l2cap_sdp_new_ch(struct bt_l2cap_device_s *dev,
                 struct bt_l2cap_conn_params_s *params)
 {
-    struct bt_l2cap_sdp_state_s *sdp = g_malloc0(sizeof(*sdp));
+    struct bt_l2cap_sdp_state_s *sdp = qemu_mallocz(sizeof(*sdp));
     struct sdp_def_service_s *services[] = {
         &sdp_service_sdp_s,
         &sdp_service_hid_s,

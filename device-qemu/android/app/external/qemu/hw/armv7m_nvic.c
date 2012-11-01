@@ -4,7 +4,7 @@
  * Copyright (c) 2006-2007 CodeSourcery.
  * Written by Paul Brook
  *
- * This code is licensed under the GPL.
+ * This code is licenced under the GPL.
  *
  * The ARMv7M System controller is fairly tightly tied in with the
  * NVIC.  Much of that is also implemented here.
@@ -13,8 +13,24 @@
 #include "sysbus.h"
 #include "qemu-timer.h"
 #include "arm-misc.h"
-#include "exec-memory.h"
-#include "arm_gic_internal.h"
+
+/* 32 internal lines (16 used for system exceptions) plus 64 external
+   interrupt lines.  */
+#define GIC_NIRQ 96
+#define NCPU 1
+#define NVIC 1
+
+/* Only a single "CPU" interface is present.  */
+static inline int
+gic_get_current_cpu(void)
+{
+    return 0;
+}
+
+static uint32_t nvic_readl(void *opaque, uint32_t offset);
+static void nvic_writel(void *opaque, uint32_t offset, uint32_t value);
+
+#include "arm_gic.c"
 
 typedef struct {
     gic_state gic;
@@ -24,37 +40,7 @@ typedef struct {
         int64_t tick;
         QEMUTimer *timer;
     } systick;
-    MemoryRegion sysregmem;
-    MemoryRegion gic_iomem_alias;
-    MemoryRegion container;
-    uint32_t num_irq;
 } nvic_state;
-
-#define TYPE_NVIC "armv7m_nvic"
-/**
- * NVICClass:
- * @parent_reset: the parent class' reset handler.
- *
- * A model of the v7M NVIC and System Controller
- */
-typedef struct NVICClass {
-    /*< private >*/
-    ARMGICClass parent_class;
-    /*< public >*/
-    int (*parent_init)(SysBusDevice *dev);
-    void (*parent_reset)(DeviceState *dev);
-} NVICClass;
-
-#define NVIC_CLASS(klass) \
-    OBJECT_CLASS_CHECK(NVICClass, (klass), TYPE_NVIC)
-#define NVIC_GET_CLASS(obj) \
-    OBJECT_GET_CLASS(NVICClass, (obj), TYPE_NVIC)
-#define NVIC(obj) \
-    OBJECT_CHECK(nvic_state, (obj), TYPE_NVIC)
-
-static const uint8_t nvic_id[] = {
-    0x00, 0xb0, 0x1b, 0x00, 0x0d, 0xe0, 0x05, 0xb1
-};
 
 /* qemu timers run at 1GHz.   We want something closer to 1MHz.  */
 #define SYSTICK_SCALE 1000ULL
@@ -78,7 +64,7 @@ static inline int64_t systick_scale(nvic_state *s)
 static void systick_reload(nvic_state *s, int reset)
 {
     if (reset)
-        s->systick.tick = qemu_get_clock_ns(vm_clock);
+        s->systick.tick = qemu_get_clock(vm_clock);
     s->systick.tick += (s->systick.reload + 1) * systick_scale(s);
     qemu_mod_timer(s->systick.timer, s->systick.tick);
 }
@@ -96,14 +82,6 @@ static void systick_timer_tick(void * opaque)
     } else {
         systick_reload(s, 0);
     }
-}
-
-static void systick_reset(nvic_state *s)
-{
-    s->systick.control = 0;
-    s->systick.reload = 0;
-    s->systick.tick = 0;
-    qemu_del_timer(s->systick.timer);
 }
 
 /* The external routines use the hardware vector numbering, ie. the first
@@ -146,7 +124,7 @@ static uint32_t nvic_readl(void *opaque, uint32_t offset)
 
     switch (offset) {
     case 4: /* Interrupt Control Type.  */
-        return (s->num_irq / 32) - 1;
+        return (GIC_NIRQ / 32) - 1;
     case 0x10: /* SysTick Control and Status.  */
         val = s->systick.control;
         s->systick.control &= ~SYSTICK_COUNTFLAG;
@@ -158,7 +136,7 @@ static uint32_t nvic_readl(void *opaque, uint32_t offset)
             int64_t t;
             if ((s->systick.control & SYSTICK_ENABLE) == 0)
                 return 0;
-            t = qemu_get_clock_ns(vm_clock);
+            t = qemu_get_clock(vm_clock);
             if (t >= s->systick.tick)
                 return 0;
             val = ((s->systick.tick - (t + 1)) / systick_scale(s)) + 1;
@@ -190,7 +168,7 @@ static uint32_t nvic_readl(void *opaque, uint32_t offset)
         if (s->gic.current_pending[0] != 1023)
             val |= (s->gic.current_pending[0] << 12);
         /* ISRPENDING */
-        for (irq = 32; irq < s->num_irq; irq++) {
+        for (irq = 32; irq < GIC_NIRQ; irq++) {
             if (s->gic.irq_state[irq].pending) {
                 val |= (1 << 22);
                 break;
@@ -219,10 +197,10 @@ static uint32_t nvic_readl(void *opaque, uint32_t offset)
     case 0xd18: case 0xd1c: case 0xd20: /* System Handler Priority.  */
         irq = offset - 0xd14;
         val = 0;
-        val |= s->gic.priority1[irq++][0];
-        val |= s->gic.priority1[irq++][0] << 8;
-        val |= s->gic.priority1[irq++][0] << 16;
-        val |= s->gic.priority1[irq][0] << 24;
+        val = s->gic.priority1[irq++][0];
+        val = s->gic.priority1[irq++][0] << 8;
+        val = s->gic.priority1[irq++][0] << 16;
+        val = s->gic.priority1[irq][0] << 24;
         return val;
     case 0xd24: /* System Handler Status.  */
         val = 0;
@@ -295,7 +273,7 @@ static void nvic_writel(void *opaque, uint32_t offset, uint32_t value)
         s->systick.control &= 0xfffffff8;
         s->systick.control |= value & 7;
         if ((oldval ^ value) & SYSTICK_ENABLE) {
-            int64_t now = qemu_get_clock_ns(vm_clock);
+            int64_t now = qemu_get_clock(vm_clock);
             if (value & SYSTICK_ENABLE) {
                 if (s->systick.tick) {
                     s->systick.tick += now;
@@ -381,164 +359,50 @@ static void nvic_writel(void *opaque, uint32_t offset, uint32_t value)
     case 0xd38: /* Bus Fault Address.  */
     case 0xd3c: /* Aux Fault Status.  */
         goto bad_reg;
-    case 0xf00: /* Software Triggered Interrupt Register */
-        if ((value & 0x1ff) < s->num_irq) {
-            gic_set_pending_private(&s->gic, 0, value & 0x1ff);
-        }
-        break;
     default:
     bad_reg:
         hw_error("NVIC: Bad write offset 0x%x\n", offset);
     }
 }
 
-static uint64_t nvic_sysreg_read(void *opaque, target_phys_addr_t addr,
-                                 unsigned size)
+static void nvic_save(QEMUFile *f, void *opaque)
 {
-    /* At the moment we only support the ID registers for byte/word access.
-     * This is not strictly correct as a few of the other registers also
-     * allow byte access.
-     */
-    uint32_t offset = addr;
-    if (offset >= 0xfe0) {
-        if (offset & 3) {
-            return 0;
-        }
-        return nvic_id[(offset - 0xfe0) >> 2];
-    }
-    if (size == 4) {
-        return nvic_readl(opaque, offset);
-    }
-    hw_error("NVIC: Bad read of size %d at offset 0x%x\n", size, offset);
+    nvic_state *s = (nvic_state *)opaque;
+
+    qemu_put_be32(f, s->systick.control);
+    qemu_put_be32(f, s->systick.reload);
+    qemu_put_be64(f, s->systick.tick);
+    qemu_put_timer(f, s->systick.timer);
 }
 
-static void nvic_sysreg_write(void *opaque, target_phys_addr_t addr,
-                              uint64_t value, unsigned size)
+static int nvic_load(QEMUFile *f, void *opaque, int version_id)
 {
-    uint32_t offset = addr;
-    if (size == 4) {
-        nvic_writel(opaque, offset, value);
-        return;
-    }
-    hw_error("NVIC: Bad write of size %d at offset 0x%x\n", size, offset);
-}
+    nvic_state *s = (nvic_state *)opaque;
 
-static const MemoryRegionOps nvic_sysreg_ops = {
-    .read = nvic_sysreg_read,
-    .write = nvic_sysreg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
-};
+    if (version_id != 1)
+        return -EINVAL;
 
-static const VMStateDescription vmstate_nvic = {
-    .name = "armv7m_nvic",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField[]) {
-        VMSTATE_UINT32(systick.control, nvic_state),
-        VMSTATE_UINT32(systick.reload, nvic_state),
-        VMSTATE_INT64(systick.tick, nvic_state),
-        VMSTATE_TIMER(systick.timer, nvic_state),
-        VMSTATE_END_OF_LIST()
-    }
-};
+    s->systick.control = qemu_get_be32(f);
+    s->systick.reload = qemu_get_be32(f);
+    s->systick.tick = qemu_get_be64(f);
+    qemu_get_timer(f, s->systick.timer);
 
-static void armv7m_nvic_reset(DeviceState *dev)
-{
-    nvic_state *s = NVIC(dev);
-    NVICClass *nc = NVIC_GET_CLASS(s);
-    nc->parent_reset(dev);
-    /* Common GIC reset resets to disabled; the NVIC doesn't have
-     * per-CPU interfaces so mark our non-existent CPU interface
-     * as enabled by default.
-     */
-    s->gic.cpu_enabled[0] = 1;
-    /* The NVIC as a whole is always enabled. */
-    s->gic.enabled = 1;
-    systick_reset(s);
-}
-
-static int armv7m_nvic_init(SysBusDevice *dev)
-{
-    nvic_state *s = NVIC(dev);
-    NVICClass *nc = NVIC_GET_CLASS(s);
-
-    /* The NVIC always has only one CPU */
-    s->gic.num_cpu = 1;
-    /* Tell the common code we're an NVIC */
-    s->gic.revision = 0xffffffff;
-    s->num_irq = s->gic.num_irq;
-    nc->parent_init(dev);
-    gic_init_irqs_and_distributor(&s->gic, s->num_irq);
-    /* The NVIC and system controller register area looks like this:
-     *  0..0xff : system control registers, including systick
-     *  0x100..0xcff : GIC-like registers
-     *  0xd00..0xfff : system control registers
-     * We use overlaying to put the GIC like registers
-     * over the top of the system control register region.
-     */
-    memory_region_init(&s->container, "nvic", 0x1000);
-    /* The system register region goes at the bottom of the priority
-     * stack as it covers the whole page.
-     */
-    memory_region_init_io(&s->sysregmem, &nvic_sysreg_ops, s,
-                          "nvic_sysregs", 0x1000);
-    memory_region_add_subregion(&s->container, 0, &s->sysregmem);
-    /* Alias the GIC region so we can get only the section of it
-     * we need, and layer it on top of the system register region.
-     */
-    memory_region_init_alias(&s->gic_iomem_alias, "nvic-gic", &s->gic.iomem,
-                             0x100, 0xc00);
-    memory_region_add_subregion_overlap(&s->container, 0x100, &s->gic.iomem, 1);
-    /* Map the whole thing into system memory at the location required
-     * by the v7M architecture.
-     */
-    memory_region_add_subregion(get_system_memory(), 0xe000e000, &s->container);
-    s->systick.timer = qemu_new_timer_ns(vm_clock, systick_timer_tick, s);
     return 0;
 }
 
-static void armv7m_nvic_instance_init(Object *obj)
+static void armv7m_nvic_init(SysBusDevice *dev)
 {
-    /* We have a different default value for the num-irq property
-     * than our superclass. This function runs after qdev init
-     * has set the defaults from the Property array and before
-     * any user-specified property setting, so just modify the
-     * value in the gic_state struct.
-     */
-    gic_state *s = ARM_GIC_COMMON(obj);
-    /* The ARM v7m may have anything from 0 to 496 external interrupt
-     * IRQ lines. We default to 64. Other boards may differ and should
-     * set the num-irq property appropriately.
-     */
-    s->num_irq = 64;
+    nvic_state *s= FROM_SYSBUSGIC(nvic_state, dev);
+
+    gic_init(&s->gic);
+    cpu_register_physical_memory(0xe000e000, 0x1000, s->gic.iomemtype);
+    s->systick.timer = qemu_new_timer(vm_clock, systick_timer_tick, s);
+    register_savevm("armv7m_nvic", -1, 1, nvic_save, nvic_load, s);
 }
 
-static void armv7m_nvic_class_init(ObjectClass *klass, void *data)
+static void armv7m_nvic_register_devices(void)
 {
-    NVICClass *nc = NVIC_CLASS(klass);
-    DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *sdc = SYS_BUS_DEVICE_CLASS(klass);
-
-    nc->parent_reset = dc->reset;
-    nc->parent_init = sdc->init;
-    sdc->init = armv7m_nvic_init;
-    dc->vmsd  = &vmstate_nvic;
-    dc->reset = armv7m_nvic_reset;
+    sysbus_register_dev("armv7m_nvic", sizeof(nvic_state), armv7m_nvic_init);
 }
 
-static TypeInfo armv7m_nvic_info = {
-    .name          = TYPE_NVIC,
-    .parent        = TYPE_ARM_GIC_COMMON,
-    .instance_init = armv7m_nvic_instance_init,
-    .instance_size = sizeof(nvic_state),
-    .class_init    = armv7m_nvic_class_init,
-    .class_size    = sizeof(NVICClass),
-};
-
-static void armv7m_nvic_register_types(void)
-{
-    type_register_static(&armv7m_nvic_info);
-}
-
-type_init(armv7m_nvic_register_types)
+device_init(armv7m_nvic_register_devices)

@@ -14,109 +14,92 @@
 #ifndef QEMU_MIGRATION_H
 #define QEMU_MIGRATION_H
 
-#include "qdict.h"
 #include "qemu-common.h"
-#include "notify.h"
-#include "error.h"
-#include "vmstate.h"
-#include "qapi-types.h"
 
-struct MigrationParams {
-    bool blk;
-    bool shared;
-};
+#define MIG_STATE_ERROR		-1
+#define MIG_STATE_COMPLETED	0
+#define MIG_STATE_CANCELLED	1
+#define MIG_STATE_ACTIVE	2
 
 typedef struct MigrationState MigrationState;
 
 struct MigrationState
 {
+    /* FIXME: add more accessors to print migration info */
+    void (*cancel)(MigrationState *s);
+    int (*get_status)(MigrationState *s);
+    void (*release)(MigrationState *s);
+};
+
+typedef struct FdMigrationState FdMigrationState;
+
+struct FdMigrationState
+{
+    MigrationState mig_state;
     int64_t bandwidth_limit;
     QEMUFile *file;
     int fd;
+    Monitor *mon_resume;
     int state;
-    int (*get_error)(MigrationState *s);
-    int (*close)(MigrationState *s);
-    int (*write)(MigrationState *s, const void *buff, size_t size);
+    int (*get_error)(struct FdMigrationState*);
+    int (*close)(struct FdMigrationState*);
+    int (*write)(struct FdMigrationState*, const void *, size_t);
     void *opaque;
-    MigrationParams params;
-    int64_t total_time;
-    bool enabled_capabilities[MIGRATION_CAPABILITY_MAX];
-    int64_t xbzrle_cache_size;
 };
 
-void process_incoming_migration(QEMUFile *f);
+void qemu_start_incoming_migration(const char *uri);
 
-int qemu_start_incoming_migration(const char *uri, Error **errp);
+void do_migrate(Monitor *mon, int detach, const char *uri);
+
+void do_migrate_cancel(Monitor *mon);
+
+void do_migrate_set_speed(Monitor *mon, const char *value);
 
 uint64_t migrate_max_downtime(void);
 
-void do_info_migrate_print(Monitor *mon, const QObject *data);
+void do_migrate_set_downtime(Monitor *mon, const char *value);
 
-void do_info_migrate(Monitor *mon, QObject **ret_data);
+void do_info_migrate(Monitor *mon);
 
 int exec_start_incoming_migration(const char *host_port);
 
-int exec_start_outgoing_migration(MigrationState *s, const char *host_port);
+MigrationState *exec_start_outgoing_migration(const char *host_port,
+					     int64_t bandwidth_limit,
+					     int detach);
 
-int tcp_start_incoming_migration(const char *host_port, Error **errp);
+int tcp_start_incoming_migration(const char *host_port);
 
-int tcp_start_outgoing_migration(MigrationState *s, const char *host_port,
-                                 Error **errp);
+MigrationState *tcp_start_outgoing_migration(const char *host_port,
+					     int64_t bandwidth_limit,
+					     int detach);
 
-int unix_start_incoming_migration(const char *path);
+void migrate_fd_monitor_suspend(FdMigrationState *s);
 
-int unix_start_outgoing_migration(MigrationState *s, const char *path);
+void migrate_fd_error(FdMigrationState *s);
 
-int fd_start_incoming_migration(const char *path);
+void migrate_fd_cleanup(FdMigrationState *s);
 
-int fd_start_outgoing_migration(MigrationState *s, const char *fdname);
+void migrate_fd_put_notify(void *opaque);
 
-void migrate_fd_error(MigrationState *s);
+ssize_t migrate_fd_put_buffer(void *opaque, const void *data, size_t size);
 
-void migrate_fd_connect(MigrationState *s);
+void migrate_fd_connect(FdMigrationState *s);
 
-void add_migration_state_change_notifier(Notifier *notify);
-void remove_migration_state_change_notifier(Notifier *notify);
-bool migration_is_active(MigrationState *);
-bool migration_has_finished(MigrationState *);
-bool migration_has_failed(MigrationState *);
+void migrate_fd_put_ready(void *opaque);
 
-uint64_t ram_bytes_remaining(void);
-uint64_t ram_bytes_transferred(void);
-uint64_t ram_bytes_total(void);
+int migrate_fd_get_status(MigrationState *mig_state);
 
-extern SaveVMHandlers savevm_ram_handlers;
+void migrate_fd_cancel(MigrationState *mig_state);
 
-uint64_t dup_mig_bytes_transferred(void);
-uint64_t dup_mig_pages_transferred(void);
-uint64_t norm_mig_bytes_transferred(void);
-uint64_t norm_mig_pages_transferred(void);
-uint64_t xbzrle_mig_bytes_transferred(void);
-uint64_t xbzrle_mig_pages_transferred(void);
-uint64_t xbzrle_mig_pages_overflow(void);
-uint64_t xbzrle_mig_pages_cache_miss(void);
+void migrate_fd_release(MigrationState *mig_state);
 
-/**
- * @migrate_add_blocker - prevent migration from proceeding
- *
- * @reason - an error to be returned whenever migration is attempted
- */
-void migrate_add_blocker(Error *reason);
+void migrate_fd_wait_for_unfreeze(void *opaque);
 
-/**
- * @migrate_del_blocker - remove a blocking error from migration
- *
- * @reason - the error blocking migration
- */
-void migrate_del_blocker(Error *reason);
+int migrate_fd_close(void *opaque);
 
-int xbzrle_encode_buffer(uint8_t *old_buf, uint8_t *new_buf, int slen,
-                         uint8_t *dst, int dlen);
-int xbzrle_decode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen);
-
-int migrate_use_xbzrle(void);
-int64_t migrate_xbzrle_cache_size(void);
-
-int64_t xbzrle_cache_resize(int64_t new_size);
+static inline FdMigrationState *migrate_to_fms(MigrationState *mig_state)
+{
+    return container_of(mig_state, FdMigrationState, mig_state);
+}
 
 #endif

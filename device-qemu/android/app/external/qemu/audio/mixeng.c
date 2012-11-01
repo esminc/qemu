@@ -33,8 +33,7 @@
 #define ENDIAN_CONVERT(v) (v)
 
 /* Signed 8 bit */
-#define BSIZE 8
-#define ITYPE int
+#define IN_T int8_t
 #define IN_MIN SCHAR_MIN
 #define IN_MAX SCHAR_MAX
 #define SIGNED
@@ -43,29 +42,25 @@
 #undef SIGNED
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
 /* Unsigned 8 bit */
-#define BSIZE 8
-#define ITYPE uint
+#define IN_T uint8_t
 #define IN_MIN 0
 #define IN_MAX UCHAR_MAX
 #define SHIFT 8
 #include "mixeng_template.h"
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
 #undef ENDIAN_CONVERT
 #undef ENDIAN_CONVERSION
 
 /* Signed 16 bit */
-#define BSIZE 16
-#define ITYPE int
+#define IN_T int16_t
 #define IN_MIN SHRT_MIN
 #define IN_MAX SHRT_MAX
 #define SIGNED
@@ -83,13 +78,11 @@
 #undef SIGNED
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
 /* Unsigned 16 bit */
-#define BSIZE 16
-#define ITYPE uint
+#define IN_T uint16_t
 #define IN_MIN 0
 #define IN_MAX USHRT_MAX
 #define SHIFT 16
@@ -105,13 +98,11 @@
 #undef ENDIAN_CONVERSION
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
 /* Signed 32 bit */
-#define BSIZE 32
-#define ITYPE int
+#define IN_T int32_t
 #define IN_MIN INT32_MIN
 #define IN_MAX INT32_MAX
 #define SIGNED
@@ -129,13 +120,11 @@
 #undef SIGNED
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
-/* Unsigned 32 bit */
-#define BSIZE 32
-#define ITYPE uint
+/* Unsigned 16 bit */
+#define IN_T uint32_t
 #define IN_MIN 0
 #define IN_MAX UINT32_MAX
 #define SHIFT 32
@@ -151,8 +140,7 @@
 #undef ENDIAN_CONVERSION
 #undef IN_MAX
 #undef IN_MIN
-#undef BSIZE
-#undef ITYPE
+#undef IN_T
 #undef SHIFT
 
 t_sample *mixeng_conv[2][2][2][3] = {
@@ -338,35 +326,10 @@ void *st_rate_start (int inrate, int outrate)
 
 void st_rate_stop (void *opaque)
 {
-    g_free (opaque);
+    qemu_free (opaque);
 }
 
 void mixeng_clear (struct st_sample *buf, int len)
 {
     memset (buf, 0, len * sizeof (struct st_sample));
-}
-
-void mixeng_volume (struct st_sample *buf, int len, struct mixeng_volume *vol)
-{
-#ifdef CONFIG_MIXEMU
-    if (vol->mute) {
-        mixeng_clear (buf, len);
-        return;
-    }
-
-    while (len--) {
-#ifdef FLOAT_MIXENG
-        buf->l = buf->l * vol->l;
-        buf->r = buf->r * vol->r;
-#else
-        buf->l = (buf->l * vol->l) >> 32;
-        buf->r = (buf->r * vol->r) >> 32;
-#endif
-        buf += 1;
-    }
-#else
-    (void) buf;
-    (void) len;
-    (void) vol;
-#endif
 }

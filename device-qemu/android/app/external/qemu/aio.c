@@ -9,19 +9,17 @@
  * This work is licensed under the terms of the GNU GPL, version 2.  See
  * the COPYING file in the top-level directory.
  *
- * Contributions after 2012-01-13 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
  */
 
 #include "qemu-common.h"
 #include "block.h"
-#include "qemu-queue.h"
+#include "sys-queue.h"
 #include "qemu_socket.h"
 
 typedef struct AioHandler AioHandler;
 
 /* The list of registered AIO handlers */
-static QLIST_HEAD(, AioHandler) aio_handlers;
+static LIST_HEAD(, AioHandler) aio_handlers;
 
 /* This is a simple lock used to protect the aio_handlers list.  Specifically,
  * it's used to ensure that no callbacks are removed while we're walking and
@@ -37,14 +35,14 @@ struct AioHandler
     AioFlushHandler *io_flush;
     int deleted;
     void *opaque;
-    QLIST_ENTRY(AioHandler) node;
+    LIST_ENTRY(AioHandler) node;
 };
 
 static AioHandler *find_aio_handler(int fd)
 {
     AioHandler *node;
 
-    QLIST_FOREACH(node, &aio_handlers, node) {
+    LIST_FOREACH(node, &aio_handlers, node) {
         if (node->fd == fd)
             if (!node->deleted)
                 return node;
@@ -74,16 +72,16 @@ int qemu_aio_set_fd_handler(int fd,
                  * deleted because deleted nodes are only cleaned up after
                  * releasing the walking_handlers lock.
                  */
-                QLIST_REMOVE(node, node);
-                g_free(node);
+                LIST_REMOVE(node, node);
+                qemu_free(node);
             }
         }
     } else {
         if (node == NULL) {
             /* Alloc and insert if it's not already there */
-            node = g_malloc0(sizeof(AioHandler));
+            node = qemu_mallocz(sizeof(AioHandler));
             node->fd = fd;
-            QLIST_INSERT_HEAD(&aio_handlers, node, node);
+            LIST_INSERT_HEAD(&aio_handlers, node, node);
         }
         /* Update handler with latest information */
         node->io_read = io_read;
@@ -99,96 +97,102 @@ int qemu_aio_set_fd_handler(int fd,
 
 void qemu_aio_flush(void)
 {
-    while (qemu_aio_wait());
+    AioHandler *node;
+    int ret;
+
+    do {
+        ret = 0;
+
+	/*
+	 * If there are pending emulated aio start them now so flush
+	 * will be able to return 1.
+	 */
+        qemu_aio_wait();
+
+        LIST_FOREACH(node, &aio_handlers, node) {
+            ret |= node->io_flush(node->opaque);
+        }
+    } while (ret > 0);
 }
 
-bool qemu_aio_wait(void)
+void qemu_aio_wait(void)
 {
-    AioHandler *node;
-    fd_set rdfds, wrfds;
-    int max_fd = -1;
     int ret;
-    bool busy;
 
-    /*
-     * If there are callbacks left that have been queued, we need to call then.
-     * Do not call select in this case, because it is possible that the caller
-     * does not need a complete flush (as is the case for qemu_aio_wait loops).
-     */
-    if (qemu_bh_poll()) {
-        return true;
-    }
+    if (qemu_bh_poll())
+        return;
 
-    walking_handlers = 1;
+    do {
+        AioHandler *node;
+        fd_set rdfds, wrfds;
+        int max_fd = -1;
 
-    FD_ZERO(&rdfds);
-    FD_ZERO(&wrfds);
-
-    /* fill fd sets */
-    busy = false;
-    QLIST_FOREACH(node, &aio_handlers, node) {
-        /* If there aren't pending AIO operations, don't invoke callbacks.
-         * Otherwise, if there are no AIO requests, qemu_aio_wait() would
-         * wait indefinitely.
-         */
-        if (node->io_flush) {
-            if (node->io_flush(node->opaque) == 0) {
-                continue;
-            }
-            busy = true;
-        }
-        if (!node->deleted && node->io_read) {
-            FD_SET(node->fd, &rdfds);
-            max_fd = MAX(max_fd, node->fd + 1);
-        }
-        if (!node->deleted && node->io_write) {
-            FD_SET(node->fd, &wrfds);
-            max_fd = MAX(max_fd, node->fd + 1);
-        }
-    }
-
-    walking_handlers = 0;
-
-    /* No AIO operations?  Get us out of here */
-    if (!busy) {
-        return false;
-    }
-
-    /* wait until next event */
-    ret = select(max_fd, &rdfds, &wrfds, NULL, NULL);
-
-    /* if we have any readable fds, dispatch event */
-    if (ret > 0) {
         walking_handlers = 1;
 
-        /* we have to walk very carefully in case
-         * qemu_aio_set_fd_handler is called while we're walking */
-        node = QLIST_FIRST(&aio_handlers);
-        while (node) {
-            AioHandler *tmp;
+        FD_ZERO(&rdfds);
+        FD_ZERO(&wrfds);
 
-            if (!node->deleted &&
-                FD_ISSET(node->fd, &rdfds) &&
-                node->io_read) {
-                node->io_read(node->opaque);
+        /* fill fd sets */
+        LIST_FOREACH(node, &aio_handlers, node) {
+            /* If there aren't pending AIO operations, don't invoke callbacks.
+             * Otherwise, if there are no AIO requests, qemu_aio_wait() would
+             * wait indefinitely.
+             */
+            if (node->io_flush && node->io_flush(node->opaque) == 0)
+                continue;
+
+            if (!node->deleted && node->io_read) {
+                FD_SET(node->fd, &rdfds);
+                max_fd = MAX(max_fd, node->fd + 1);
             }
-            if (!node->deleted &&
-                FD_ISSET(node->fd, &wrfds) &&
-                node->io_write) {
-                node->io_write(node->opaque);
-            }
-
-            tmp = node;
-            node = QLIST_NEXT(node, node);
-
-            if (tmp->deleted) {
-                QLIST_REMOVE(tmp, node);
-                g_free(tmp);
+            if (!node->deleted && node->io_write) {
+                FD_SET(node->fd, &wrfds);
+                max_fd = MAX(max_fd, node->fd + 1);
             }
         }
 
         walking_handlers = 0;
-    }
 
-    return true;
+        /* No AIO operations?  Get us out of here */
+        if (max_fd == -1)
+            break;
+
+        /* wait until next event */
+        ret = select(max_fd, &rdfds, &wrfds, NULL, NULL);
+        if (ret == -1 && errno == EINTR)
+            continue;
+
+        /* if we have any readable fds, dispatch event */
+        if (ret > 0) {
+            walking_handlers = 1;
+
+            /* we have to walk very carefully in case
+             * qemu_aio_set_fd_handler is called while we're walking */
+            node = LIST_FIRST(&aio_handlers);
+            while (node) {
+                AioHandler *tmp;
+
+                if (!node->deleted &&
+                    FD_ISSET(node->fd, &rdfds) &&
+                    node->io_read) {
+                    node->io_read(node->opaque);
+                }
+                if (!node->deleted &&
+                    FD_ISSET(node->fd, &wrfds) &&
+                    node->io_write) {
+                    node->io_write(node->opaque);
+                }
+
+                tmp = node;
+                node = LIST_NEXT(node, node);
+
+                if (tmp->deleted) {
+                    LIST_REMOVE(tmp, node);
+                    qemu_free(tmp);
+                }
+            }
+
+            walking_handlers = 0;
+        }
+    } while (ret == 0);
 }

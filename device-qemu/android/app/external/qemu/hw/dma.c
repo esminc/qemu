@@ -57,7 +57,6 @@ static struct dma_cont {
     uint8_t flip_flop;
     int dshift;
     struct dma_regs regs[4];
-    qemu_irq *cpu_request_exit;
 } dma_controllers[2];
 
 enum {
@@ -345,6 +344,7 @@ static void channel_run (int ncont, int ichan)
     }
 #endif
 
+    r = dma_controllers[ncont].regs + ichan;
     n = r->transfer_handler (r->opaque, ichan + (ncont << 2),
                              r->now[COUNT], (r->base[COUNT] + 1) << ncont);
     r->now[COUNT] = n;
@@ -358,14 +358,6 @@ static void DMA_run (void)
     struct dma_cont *d;
     int icont, ichan;
     int rearm = 0;
-    static int running = 0;
-
-    if (running) {
-        rearm = 1;
-        goto out;
-    } else {
-        running = 1;
-    }
 
     d = dma_controllers;
 
@@ -382,8 +374,6 @@ static void DMA_run (void)
         }
     }
 
-    running = 0;
-out:
     if (rearm)
         qemu_bh_schedule_idle(dma_bh);
 }
@@ -455,9 +445,9 @@ int DMA_write_memory (int nchan, void *buf, int pos, int len)
 /* request the emulator to transfer a new DMA memory block ASAP */
 void DMA_schedule(int nchan)
 {
-    struct dma_cont *d = &dma_controllers[nchan > 3];
-
-    qemu_irq_pulse(*d->cpu_request_exit);
+    CPUState *env = cpu_single_env;
+    if (env)
+        cpu_exit(env);
 }
 
 static void dma_reset(void *opaque)
@@ -475,14 +465,12 @@ static int dma_phony_handler (void *opaque, int nchan, int dma_pos, int dma_len)
 
 /* dshift = 0: 8 bit DMA, 1 = 16 bit DMA */
 static void dma_init2(struct dma_cont *d, int base, int dshift,
-                      int page_base, int pageh_base,
-                      qemu_irq *cpu_request_exit)
+                      int page_base, int pageh_base)
 {
     static const int page_port_list[] = { 0x1, 0x2, 0x3, 0x7 };
     int i;
 
     d->dshift = dshift;
-    d->cpu_request_exit = cpu_request_exit;
     for (i = 0; i < 8; i++) {
         register_ioport_write (base + (i << dshift), 1, 1, write_chan, d);
         register_ioport_read (base + (i << dshift), 1, 1, read_chan, d);
@@ -505,61 +493,78 @@ static void dma_init2(struct dma_cont *d, int base, int dshift,
         register_ioport_read (base + ((i + 8) << dshift), 1, 1,
                               read_cont, d);
     }
-    qemu_register_reset(dma_reset, d);
+    qemu_register_reset(dma_reset, 0, d);
     dma_reset(d);
     for (i = 0; i < ARRAY_SIZE (d->regs); ++i) {
         d->regs[i].transfer_handler = dma_phony_handler;
     }
 }
 
-static const VMStateDescription vmstate_dma_regs = {
-    .name = "dma_regs",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
-        VMSTATE_INT32_ARRAY(now, struct dma_regs, 2),
-        VMSTATE_UINT16_ARRAY(base, struct dma_regs, 2),
-        VMSTATE_UINT8(mode, struct dma_regs),
-        VMSTATE_UINT8(page, struct dma_regs),
-        VMSTATE_UINT8(pageh, struct dma_regs),
-        VMSTATE_UINT8(dack, struct dma_regs),
-        VMSTATE_UINT8(eop, struct dma_regs),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static int dma_post_load(void *opaque, int version_id)
+static void dma_save (QEMUFile *f, void *opaque)
 {
+    struct dma_cont *d = opaque;
+    int i;
+
+    /* qemu_put_8s (f, &d->status); */
+    qemu_put_8s (f, &d->command);
+    qemu_put_8s (f, &d->mask);
+    qemu_put_8s (f, &d->flip_flop);
+    qemu_put_be32 (f, d->dshift);
+
+    for (i = 0; i < 4; ++i) {
+        struct dma_regs *r = &d->regs[i];
+        qemu_put_be32 (f, r->now[0]);
+        qemu_put_be32 (f, r->now[1]);
+        qemu_put_be16s (f, &r->base[0]);
+        qemu_put_be16s (f, &r->base[1]);
+        qemu_put_8s (f, &r->mode);
+        qemu_put_8s (f, &r->page);
+        qemu_put_8s (f, &r->pageh);
+        qemu_put_8s (f, &r->dack);
+        qemu_put_8s (f, &r->eop);
+    }
+}
+
+static int dma_load (QEMUFile *f, void *opaque, int version_id)
+{
+    struct dma_cont *d = opaque;
+    int i;
+
+    if (version_id != 1)
+        return -EINVAL;
+
+    /* qemu_get_8s (f, &d->status); */
+    qemu_get_8s (f, &d->command);
+    qemu_get_8s (f, &d->mask);
+    qemu_get_8s (f, &d->flip_flop);
+    d->dshift=qemu_get_be32 (f);
+
+    for (i = 0; i < 4; ++i) {
+        struct dma_regs *r = &d->regs[i];
+        r->now[0]=qemu_get_be32 (f);
+        r->now[1]=qemu_get_be32 (f);
+        qemu_get_be16s (f, &r->base[0]);
+        qemu_get_be16s (f, &r->base[1]);
+        qemu_get_8s (f, &r->mode);
+        qemu_get_8s (f, &r->page);
+        qemu_get_8s (f, &r->pageh);
+        qemu_get_8s (f, &r->dack);
+        qemu_get_8s (f, &r->eop);
+    }
+
     DMA_run();
 
     return 0;
 }
 
-static const VMStateDescription vmstate_dma = {
-    .name = "dma",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .post_load = dma_post_load,
-    .fields      = (VMStateField []) {
-        VMSTATE_UINT8(command, struct dma_cont),
-        VMSTATE_UINT8(mask, struct dma_cont),
-        VMSTATE_UINT8(flip_flop, struct dma_cont),
-        VMSTATE_INT32(dshift, struct dma_cont),
-        VMSTATE_STRUCT_ARRAY(regs, struct dma_cont, 4, 1, vmstate_dma_regs, struct dma_regs),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-void DMA_init(int high_page_enable, qemu_irq *cpu_request_exit)
+void DMA_init (int high_page_enable)
 {
     dma_init2(&dma_controllers[0], 0x00, 0, 0x80,
-              high_page_enable ? 0x480 : -1, cpu_request_exit);
+              high_page_enable ? 0x480 : -1);
     dma_init2(&dma_controllers[1], 0xc0, 1, 0x88,
-              high_page_enable ? 0x488 : -1, cpu_request_exit);
-    vmstate_register (NULL, 0, &vmstate_dma, &dma_controllers[0]);
-    vmstate_register (NULL, 1, &vmstate_dma, &dma_controllers[1]);
+              high_page_enable ? 0x488 : -1);
+    register_savevm ("dma", 0, 1, dma_save, dma_load, &dma_controllers[0]);
+    register_savevm ("dma", 1, 1, dma_save, dma_load, &dma_controllers[1]);
 
     dma_bh = qemu_bh_new(DMA_run_bh, NULL);
 }

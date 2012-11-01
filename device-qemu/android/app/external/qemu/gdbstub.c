@@ -14,7 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA  02110-1301 USA
  */
 #include "config.h"
 #include "qemu-common.h"
@@ -37,29 +38,14 @@
 
 #define MAX_PACKET_LENGTH 4096
 
-#include "cpu.h"
 #include "qemu_socket.h"
 #include "kvm.h"
 
-#ifndef TARGET_CPU_MEMORY_RW_DEBUG
-static inline int target_memory_rw_debug(CPUArchState *env, target_ulong addr,
-                                         uint8_t *buf, int len, int is_write)
-{
-    return cpu_memory_rw_debug(env, addr, buf, len, is_write);
-}
-#else
-/* target_memory_rw_debug() defined in cpu.h */
-#endif
 
 enum {
     GDB_SIGNAL_0 = 0,
     GDB_SIGNAL_INT = 2,
-    GDB_SIGNAL_QUIT = 3,
     GDB_SIGNAL_TRAP = 5,
-    GDB_SIGNAL_ABRT = 6,
-    GDB_SIGNAL_ALRM = 14,
-    GDB_SIGNAL_IO = 23,
-    GDB_SIGNAL_XCPU = 24,
     GDB_SIGNAL_UNKNOWN = 143
 };
 
@@ -284,11 +270,12 @@ enum RSState {
     RS_GETLINE,
     RS_CHKSUM1,
     RS_CHKSUM2,
+    RS_SYSCALL,
 };
 typedef struct GDBState {
-    CPUArchState *c_cpu; /* current CPU for step/continue ops */
-    CPUArchState *g_cpu; /* current CPU for other ops */
-    CPUArchState *query_cpu; /* for q{f|s}ThreadInfo */
+    CPUState *c_cpu; /* current CPU for step/continue ops */
+    CPUState *g_cpu; /* current CPU for other ops */
+    CPUState *query_cpu; /* for q{f|s}ThreadInfo */
     enum RSState state; /* parsing state */
     char line_buf[MAX_PACKET_LENGTH];
     int line_buf_index;
@@ -303,8 +290,6 @@ typedef struct GDBState {
     CharDriverState *chr;
     CharDriverState *mon_chr;
 #endif
-    char syscall_buf[256];
-    gdb_syscall_complete_cb current_syscall_cb;
 } GDBState;
 
 /* By default use no IRQs and no timers while single stepping so as to
@@ -329,7 +314,7 @@ static int get_char(GDBState *s)
     int ret;
 
     for(;;) {
-        ret = qemu_recv(s->fd, &ch, 1, 0);
+        ret = recv(s->fd, &ch, 1, 0);
         if (ret < 0) {
             if (errno == ECONNRESET)
                 s->fd = -1;
@@ -346,6 +331,8 @@ static int get_char(GDBState *s)
     return ch;
 }
 #endif
+
+static gdb_syscall_complete_cb gdb_current_syscall_cb;
 
 static enum {
     GDB_SYS_UNKNOWN,
@@ -390,7 +377,7 @@ static void put_buffer(GDBState *s, const uint8_t *buf, int len)
         }
     }
 #else
-    qemu_chr_fe_write(s->chr, buf, len);
+    qemu_chr_write(s->chr, buf, len);
 #endif
 }
 
@@ -519,169 +506,116 @@ static const int gpr_map[16] = {
     8, 9, 10, 11, 12, 13, 14, 15
 };
 #else
-#define gpr_map gpr_map32
+static const int gpr_map[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 #endif
-static const int gpr_map32[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
 #define NUM_CORE_REGS (CPU_NB_REGS * 2 + 25)
 
-#define IDX_IP_REG      CPU_NB_REGS
-#define IDX_FLAGS_REG   (IDX_IP_REG + 1)
-#define IDX_SEG_REGS    (IDX_FLAGS_REG + 1)
-#define IDX_FP_REGS     (IDX_SEG_REGS + 6)
-#define IDX_XMM_REGS    (IDX_FP_REGS + 16)
-#define IDX_MXCSR_REG   (IDX_XMM_REGS + CPU_NB_REGS)
-
-static int cpu_gdb_read_register(CPUX86State *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < CPU_NB_REGS) {
-        if (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK) {
-            GET_REG64(env->regs[gpr_map[n]]);
-        } else if (n < CPU_NB_REGS32) {
-            GET_REG32(env->regs[gpr_map32[n]]);
-        }
-    } else if (n >= IDX_FP_REGS && n < IDX_FP_REGS + 8) {
+        GET_REGL(env->regs[gpr_map[n]]);
+    } else if (n >= CPU_NB_REGS + 8 && n < CPU_NB_REGS + 16) {
+        /* FIXME: byteswap float values.  */
 #ifdef USE_X86LDOUBLE
-        /* FIXME: byteswap float values - after fixing fpregs layout. */
-        memcpy(mem_buf, &env->fpregs[n - IDX_FP_REGS], 10);
+        memcpy(mem_buf, &env->fpregs[n - (CPU_NB_REGS + 8)], 10);
 #else
         memset(mem_buf, 0, 10);
 #endif
         return 10;
-    } else if (n >= IDX_XMM_REGS && n < IDX_XMM_REGS + CPU_NB_REGS) {
-        n -= IDX_XMM_REGS;
-        if (n < CPU_NB_REGS32 ||
-            (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK)) {
+    } else if (n >= CPU_NB_REGS + 24) {
+        n -= CPU_NB_REGS + 24;
+        if (n < CPU_NB_REGS) {
             stq_p(mem_buf, env->xmm_regs[n].XMM_Q(0));
             stq_p(mem_buf + 8, env->xmm_regs[n].XMM_Q(1));
             return 16;
-        }
+        } else if (n == CPU_NB_REGS) {
+            GET_REG32(env->mxcsr);
+        } 
     } else {
+        n -= CPU_NB_REGS;
         switch (n) {
-        case IDX_IP_REG:
-            if (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK) {
-                GET_REG64(env->eip);
-            } else {
-                GET_REG32(env->eip);
-            }
-        case IDX_FLAGS_REG: GET_REG32(env->eflags);
-
-        case IDX_SEG_REGS:     GET_REG32(env->segs[R_CS].selector);
-        case IDX_SEG_REGS + 1: GET_REG32(env->segs[R_SS].selector);
-        case IDX_SEG_REGS + 2: GET_REG32(env->segs[R_DS].selector);
-        case IDX_SEG_REGS + 3: GET_REG32(env->segs[R_ES].selector);
-        case IDX_SEG_REGS + 4: GET_REG32(env->segs[R_FS].selector);
-        case IDX_SEG_REGS + 5: GET_REG32(env->segs[R_GS].selector);
-
-        case IDX_FP_REGS + 8:  GET_REG32(env->fpuc);
-        case IDX_FP_REGS + 9:  GET_REG32((env->fpus & ~0x3800) |
-                                         (env->fpstt & 0x7) << 11);
-        case IDX_FP_REGS + 10: GET_REG32(0); /* ftag */
-        case IDX_FP_REGS + 11: GET_REG32(0); /* fiseg */
-        case IDX_FP_REGS + 12: GET_REG32(0); /* fioff */
-        case IDX_FP_REGS + 13: GET_REG32(0); /* foseg */
-        case IDX_FP_REGS + 14: GET_REG32(0); /* fooff */
-        case IDX_FP_REGS + 15: GET_REG32(0); /* fop */
-
-        case IDX_MXCSR_REG: GET_REG32(env->mxcsr);
+        case 0: GET_REGL(env->eip);
+        case 1: GET_REG32(env->eflags);
+        case 2: GET_REG32(env->segs[R_CS].selector);
+        case 3: GET_REG32(env->segs[R_SS].selector);
+        case 4: GET_REG32(env->segs[R_DS].selector);
+        case 5: GET_REG32(env->segs[R_ES].selector);
+        case 6: GET_REG32(env->segs[R_FS].selector);
+        case 7: GET_REG32(env->segs[R_GS].selector);
+        /* 8...15 x87 regs.  */
+        case 16: GET_REG32(env->fpuc);
+        case 17: GET_REG32((env->fpus & ~0x3800) | (env->fpstt & 0x7) << 11);
+        case 18: GET_REG32(0); /* ftag */
+        case 19: GET_REG32(0); /* fiseg */
+        case 20: GET_REG32(0); /* fioff */
+        case 21: GET_REG32(0); /* foseg */
+        case 22: GET_REG32(0); /* fooff */
+        case 23: GET_REG32(0); /* fop */
+        /* 24+ xmm regs.  */
         }
     }
     return 0;
 }
 
-static int cpu_x86_gdb_load_seg(CPUX86State *env, int sreg, uint8_t *mem_buf)
-{
-    uint16_t selector = ldl_p(mem_buf);
-
-    if (selector != env->segs[sreg].selector) {
-#if defined(CONFIG_USER_ONLY)
-        cpu_x86_load_seg(env, sreg, selector);
-#else
-        unsigned int limit, flags;
-        target_ulong base;
-
-        if (!(env->cr[0] & CR0_PE_MASK) || (env->eflags & VM_MASK)) {
-            base = selector << 4;
-            limit = 0xffff;
-            flags = 0;
-        } else {
-            if (!cpu_x86_get_descr_debug(env, selector, &base, &limit, &flags))
-                return 4;
-        }
-        cpu_x86_load_seg_cache(env, sreg, selector, base, limit, flags);
-#endif
-    }
-    return 4;
-}
-
-static int cpu_gdb_write_register(CPUX86State *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int i)
 {
     uint32_t tmp;
 
-    if (n < CPU_NB_REGS) {
-        if (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK) {
-            env->regs[gpr_map[n]] = ldtul_p(mem_buf);
-            return sizeof(target_ulong);
-        } else if (n < CPU_NB_REGS32) {
-            n = gpr_map32[n];
-            env->regs[n] &= ~0xffffffffUL;
-            env->regs[n] |= (uint32_t)ldl_p(mem_buf);
-            return 4;
-        }
-    } else if (n >= IDX_FP_REGS && n < IDX_FP_REGS + 8) {
+    if (i < CPU_NB_REGS) {
+        env->regs[gpr_map[i]] = ldtul_p(mem_buf);
+        return sizeof(target_ulong);
+    } else if (i >= CPU_NB_REGS + 8 && i < CPU_NB_REGS + 16) {
+        i -= CPU_NB_REGS + 8;
 #ifdef USE_X86LDOUBLE
-        /* FIXME: byteswap float values - after fixing fpregs layout. */
-        memcpy(&env->fpregs[n - IDX_FP_REGS], mem_buf, 10);
+        memcpy(&env->fpregs[i], mem_buf, 10);
 #endif
         return 10;
-    } else if (n >= IDX_XMM_REGS && n < IDX_XMM_REGS + CPU_NB_REGS) {
-        n -= IDX_XMM_REGS;
-        if (n < CPU_NB_REGS32 ||
-            (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK)) {
-            env->xmm_regs[n].XMM_Q(0) = ldq_p(mem_buf);
-            env->xmm_regs[n].XMM_Q(1) = ldq_p(mem_buf + 8);
+    } else if (i >= CPU_NB_REGS + 24) {
+        i -= CPU_NB_REGS + 24;
+        if (i < CPU_NB_REGS) {
+            env->xmm_regs[i].XMM_Q(0) = ldq_p(mem_buf);
+            env->xmm_regs[i].XMM_Q(1) = ldq_p(mem_buf + 8);
             return 16;
-        }
-    } else {
-        switch (n) {
-        case IDX_IP_REG:
-            if (TARGET_LONG_BITS == 64 && env->hflags & HF_CS64_MASK) {
-                env->eip = ldq_p(mem_buf);
-                return 8;
-            } else {
-                env->eip &= ~0xffffffffUL;
-                env->eip |= (uint32_t)ldl_p(mem_buf);
-                return 4;
-            }
-        case IDX_FLAGS_REG:
-            env->eflags = ldl_p(mem_buf);
-            return 4;
-
-        case IDX_SEG_REGS:     return cpu_x86_gdb_load_seg(env, R_CS, mem_buf);
-        case IDX_SEG_REGS + 1: return cpu_x86_gdb_load_seg(env, R_SS, mem_buf);
-        case IDX_SEG_REGS + 2: return cpu_x86_gdb_load_seg(env, R_DS, mem_buf);
-        case IDX_SEG_REGS + 3: return cpu_x86_gdb_load_seg(env, R_ES, mem_buf);
-        case IDX_SEG_REGS + 4: return cpu_x86_gdb_load_seg(env, R_FS, mem_buf);
-        case IDX_SEG_REGS + 5: return cpu_x86_gdb_load_seg(env, R_GS, mem_buf);
-
-        case IDX_FP_REGS + 8:
-            env->fpuc = ldl_p(mem_buf);
-            return 4;
-        case IDX_FP_REGS + 9:
-            tmp = ldl_p(mem_buf);
-            env->fpstt = (tmp >> 11) & 7;
-            env->fpus = tmp & ~0x3800;
-            return 4;
-        case IDX_FP_REGS + 10: /* ftag */  return 4;
-        case IDX_FP_REGS + 11: /* fiseg */ return 4;
-        case IDX_FP_REGS + 12: /* fioff */ return 4;
-        case IDX_FP_REGS + 13: /* foseg */ return 4;
-        case IDX_FP_REGS + 14: /* fooff */ return 4;
-        case IDX_FP_REGS + 15: /* fop */   return 4;
-
-        case IDX_MXCSR_REG:
+        } else if (i == CPU_NB_REGS) {
             env->mxcsr = ldl_p(mem_buf);
             return 4;
+        }
+    } else {
+        i -= CPU_NB_REGS;
+        switch (i) {
+        case 0: env->eip = ldtul_p(mem_buf); return sizeof(target_ulong);
+        case 1: env->eflags = ldl_p(mem_buf); return 4;
+#if defined(CONFIG_USER_ONLY)
+#define LOAD_SEG(index, sreg)\
+            tmp = ldl_p(mem_buf);\
+            if (tmp != env->segs[sreg].selector)\
+                cpu_x86_load_seg(env, sreg, tmp);
+#else
+/* FIXME: Honor segment registers.  Needs to avoid raising an exception
+   when the selector is invalid.  */
+#define LOAD_SEG(index, sreg) do {} while(0)
+#endif
+        case 2: LOAD_SEG(10, R_CS); return 4;
+        case 3: LOAD_SEG(11, R_SS); return 4;
+        case 4: LOAD_SEG(12, R_DS); return 4;
+        case 5: LOAD_SEG(13, R_ES); return 4;
+        case 6: LOAD_SEG(14, R_FS); return 4;
+        case 7: LOAD_SEG(15, R_GS); return 4;
+        /* 8...15 x87 regs.  */
+        case 16: env->fpuc = ldl_p(mem_buf); return 4;
+        case 17:
+                 tmp = ldl_p(mem_buf);
+                 env->fpstt = (tmp >> 11) & 7;
+                 env->fpus = tmp & ~0x3800;
+                 return 4;
+        case 18: /* ftag */ return 4;
+        case 19: /* fiseg */ return 4;
+        case 20: /* fioff */ return 4;
+        case 21: /* foseg */ return 4;
+        case 22: /* fooff */ return 4;
+        case 23: /* fop */ return 4;
+        /* 24+ xmm regs.  */
         }
     }
     /* Unrecognised register.  */
@@ -702,7 +636,7 @@ static int cpu_gdb_write_register(CPUX86State *env, uint8_t *mem_buf, int n)
 #define GDB_CORE_XML "power-core.xml"
 #endif
 
-static int cpu_gdb_read_register(CPUPPCState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
         /* gprs */
@@ -732,14 +666,14 @@ static int cpu_gdb_read_register(CPUPPCState *env, uint8_t *mem_buf, int n)
             {
                 if (gdb_has_xml)
                     return 0;
-                GET_REG32(env->fpscr);
+                GET_REG32(0); /* fpscr */
             }
         }
     }
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUPPCState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
         /* gprs */
@@ -800,7 +734,7 @@ static int cpu_gdb_write_register(CPUPPCState *env, uint8_t *mem_buf, int n)
 #define GET_REGA(val) GET_REGL(val)
 #endif
 
-static int cpu_gdb_read_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 8) {
         /* g0..g7 */
@@ -813,16 +747,12 @@ static int cpu_gdb_read_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
 #if defined(TARGET_ABI32) || !defined(TARGET_SPARC64)
     if (n < 64) {
         /* fprs */
-        if (n & 1) {
-            GET_REG32(env->fpr[(n - 32) / 2].l.lower);
-        } else {
-            GET_REG32(env->fpr[(n - 32) / 2].l.upper);
-        }
+        GET_REG32(*((uint32_t *)&env->fpr[n - 32]));
     }
     /* Y, PSR, WIM, TBR, PC, NPC, FPSR, CPSR */
     switch (n) {
     case 64: GET_REGA(env->y);
-    case 65: GET_REGA(cpu_get_psr(env));
+    case 65: GET_REGA(GET_PSR(env));
     case 66: GET_REGA(env->wim);
     case 67: GET_REGA(env->tbr);
     case 68: GET_REGA(env->pc);
@@ -834,23 +764,23 @@ static int cpu_gdb_read_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
 #else
     if (n < 64) {
         /* f0-f31 */
-        if (n & 1) {
-            GET_REG32(env->fpr[(n - 32) / 2].l.lower);
-        } else {
-            GET_REG32(env->fpr[(n - 32) / 2].l.upper);
-        }
+        GET_REG32(*((uint32_t *)&env->fpr[n - 32]));
     }
     if (n < 80) {
         /* f32-f62 (double width, even numbers only) */
-        GET_REG64(env->fpr[(n - 32) / 2].ll);
+        uint64_t val;
+
+        val = (uint64_t)*((uint32_t *)&env->fpr[(n - 64) * 2 + 32]) << 32;
+        val |= *((uint32_t *)&env->fpr[(n - 64) * 2 + 33]);
+        GET_REG64(val);
     }
     switch (n) {
     case 80: GET_REGL(env->pc);
     case 81: GET_REGL(env->npc);
-    case 82: GET_REGL((cpu_get_ccr(env) << 32) |
-                      ((env->asi & 0xff) << 24) |
-                      ((env->pstate & 0xfff) << 8) |
-                      cpu_get_cwp64(env));
+    case 82: GET_REGL(((uint64_t)GET_CCR(env) << 32) |
+                           ((env->asi & 0xff) << 24) |
+                           ((env->pstate & 0xfff) << 8) |
+                           GET_CWP64(env));
     case 83: GET_REGL(env->fsr);
     case 84: GET_REGL(env->fprs);
     case 85: GET_REGL(env->y);
@@ -859,7 +789,7 @@ static int cpu_gdb_read_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
 #if defined(TARGET_ABI32)
     abi_ulong tmp;
@@ -881,17 +811,12 @@ static int cpu_gdb_write_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
 #if defined(TARGET_ABI32) || !defined(TARGET_SPARC64)
     else if (n < 64) {
         /* fprs */
-        /* f0-f31 */
-        if (n & 1) {
-            env->fpr[(n - 32) / 2].l.lower = tmp;
-        } else {
-            env->fpr[(n - 32) / 2].l.upper = tmp;
-        }
+        *((uint32_t *)&env->fpr[n - 32]) = tmp;
     } else {
         /* Y, PSR, WIM, TBR, PC, NPC, FPSR, CPSR */
         switch (n) {
         case 64: env->y = tmp; break;
-        case 65: cpu_put_psr(env, tmp); break;
+        case 65: PUT_PSR(env, tmp); break;
         case 66: env->wim = tmp; break;
         case 67: env->tbr = tmp; break;
         case 68: env->pc = tmp; break;
@@ -904,25 +829,21 @@ static int cpu_gdb_write_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
 #else
     else if (n < 64) {
         /* f0-f31 */
-        tmp = ldl_p(mem_buf);
-        if (n & 1) {
-            env->fpr[(n - 32) / 2].l.lower = tmp;
-        } else {
-            env->fpr[(n - 32) / 2].l.upper = tmp;
-        }
+        env->fpr[n] = ldfl_p(mem_buf);
         return 4;
     } else if (n < 80) {
         /* f32-f62 (double width, even numbers only) */
-        env->fpr[(n - 32) / 2].ll = tmp;
+        *((uint32_t *)&env->fpr[(n - 64) * 2 + 32]) = tmp >> 32;
+        *((uint32_t *)&env->fpr[(n - 64) * 2 + 33]) = tmp;
     } else {
         switch (n) {
         case 80: env->pc = tmp; break;
         case 81: env->npc = tmp; break;
         case 82:
-            cpu_put_ccr(env, tmp >> 32);
+	    PUT_CCR(env, tmp >> 32);
 	    env->asi = (tmp >> 24) & 0xff;
 	    env->pstate = (tmp >> 8) & 0xfff;
-            cpu_put_cwp64(env, tmp & 0xff);
+	    PUT_CWP64(env, tmp & 0xff);
 	    break;
         case 83: env->fsr = tmp; break;
         case 84: env->fprs = tmp; break;
@@ -943,7 +864,7 @@ static int cpu_gdb_write_register(CPUSPARCState *env, uint8_t *mem_buf, int n)
 #define NUM_CORE_REGS 26
 #define GDB_CORE_XML "arm-core.xml"
 
-static int cpu_gdb_read_register(CPUARMState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 16) {
         /* Core integer register.  */
@@ -970,7 +891,7 @@ static int cpu_gdb_read_register(CPUARMState *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUARMState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint32_t tmp;
 
@@ -1013,7 +934,7 @@ static int cpu_gdb_write_register(CPUARMState *env, uint8_t *mem_buf, int n)
 
 #define GDB_CORE_XML "cf-core.xml"
 
-static int cpu_gdb_read_register(CPUM68KState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 8) {
         /* D0-D7 */
@@ -1032,7 +953,7 @@ static int cpu_gdb_read_register(CPUM68KState *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUM68KState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint32_t tmp;
 
@@ -1041,7 +962,7 @@ static int cpu_gdb_write_register(CPUM68KState *env, uint8_t *mem_buf, int n)
     if (n < 8) {
         /* D0-D7 */
         env->dregs[n] = tmp;
-    } else if (n < 16) {
+    } else if (n < 8) {
         /* A0-A7 */
         env->aregs[n - 8] = tmp;
     } else {
@@ -1057,7 +978,7 @@ static int cpu_gdb_write_register(CPUM68KState *env, uint8_t *mem_buf, int n)
 
 #define NUM_CORE_REGS 73
 
-static int cpu_gdb_read_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
         GET_REGL(env->active_tc.gpr[n]);
@@ -1080,7 +1001,7 @@ static int cpu_gdb_read_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
     case 34: GET_REGL(env->active_tc.HI[0]);
     case 35: GET_REGL(env->CP0_BadVAddr);
     case 36: GET_REGL((int32_t)env->CP0_Cause);
-    case 37: GET_REGL(env->active_tc.PC | !!(env->hflags & MIPS_HFLAG_M16));
+    case 37: GET_REGL(env->active_tc.PC);
     case 72: GET_REGL(0); /* fp */
     case 89: GET_REGL((int32_t)env->CP0_PRid);
     }
@@ -1103,7 +1024,7 @@ static unsigned int ieee_rm[] =
 #define RESTORE_ROUNDING_MODE \
     set_float_rounding_mode(ieee_rm[env->active_fpu.fcr31 & 3], &env->active_fpu.fp_status)
 
-static int cpu_gdb_write_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     target_ulong tmp;
 
@@ -1126,6 +1047,10 @@ static int cpu_gdb_write_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
             env->active_fpu.fcr31 = tmp & 0xFF83FFFF;
             /* set rounding mode */
             RESTORE_ROUNDING_MODE;
+#ifndef CONFIG_SOFTFLOAT
+            /* no floating point exception for native float */
+            SET_FP_ENABLE(env->active_fpu.fcr31, 0);
+#endif
             break;
         case 71: env->active_fpu.fcr0 = tmp; break;
         }
@@ -1137,14 +1062,7 @@ static int cpu_gdb_write_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
     case 34: env->active_tc.HI[0] = tmp; break;
     case 35: env->CP0_BadVAddr = tmp; break;
     case 36: env->CP0_Cause = tmp; break;
-    case 37:
-        env->active_tc.PC = tmp & ~(target_ulong)1;
-        if (tmp & 1) {
-            env->hflags |= MIPS_HFLAG_M16;
-        } else {
-            env->hflags &= ~(MIPS_HFLAG_M16);
-        }
-        break;
+    case 37: env->active_tc.PC = tmp; break;
     case 72: /* fp, ignored */ break;
     default: 
 	if (n > 89)
@@ -1155,68 +1073,6 @@ static int cpu_gdb_write_register(CPUMIPSState *env, uint8_t *mem_buf, int n)
 
     return sizeof(target_ulong);
 }
-#elif defined(TARGET_OPENRISC)
-
-#define NUM_CORE_REGS (32 + 3)
-
-static int cpu_gdb_read_register(CPUOpenRISCState *env, uint8_t *mem_buf, int n)
-{
-    if (n < 32) {
-        GET_REG32(env->gpr[n]);
-    } else {
-        switch (n) {
-        case 32:    /* PPC */
-            GET_REG32(env->ppc);
-            break;
-
-        case 33:    /* NPC */
-            GET_REG32(env->npc);
-            break;
-
-        case 34:    /* SR */
-            GET_REG32(env->sr);
-            break;
-
-        default:
-            break;
-        }
-    }
-    return 0;
-}
-
-static int cpu_gdb_write_register(CPUOpenRISCState *env,
-                                  uint8_t *mem_buf, int n)
-{
-    uint32_t tmp;
-
-    if (n > NUM_CORE_REGS) {
-        return 0;
-    }
-
-    tmp = ldl_p(mem_buf);
-
-    if (n < 32) {
-        env->gpr[n] = tmp;
-    } else {
-        switch (n) {
-        case 32: /* PPC */
-            env->ppc = tmp;
-            break;
-
-        case 33: /* NPC */
-            env->npc = tmp;
-            break;
-
-        case 34: /* SR */
-            env->sr = tmp;
-            break;
-
-        default:
-            break;
-        }
-    }
-    return 4;
-}
 #elif defined (TARGET_SH4)
 
 /* Hint: Use "set architecture sh4" in GDB to see fpu registers */
@@ -1224,7 +1080,7 @@ static int cpu_gdb_write_register(CPUOpenRISCState *env,
 
 #define NUM_CORE_REGS 59
 
-static int cpu_gdb_read_register(CPUSH4State *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 8) {
         if ((env->sr & (SR_MD | SR_RB)) == (SR_MD | SR_RB)) {
@@ -1233,7 +1089,7 @@ static int cpu_gdb_read_register(CPUSH4State *env, uint8_t *mem_buf, int n)
             GET_REGL(env->gregs[n]);
         }
     } else if (n < 16) {
-        GET_REGL(env->gregs[n]);
+        GET_REGL(env->gregs[n - 8]);
     } else if (n >= 25 && n < 41) {
 	GET_REGL(env->fregs[(n - 25) + ((env->fpscr & FPSCR_FR) ? 16 : 0)]);
     } else if (n >= 43 && n < 51) {
@@ -1258,7 +1114,7 @@ static int cpu_gdb_read_register(CPUSH4State *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUSH4State *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint32_t tmp;
 
@@ -1272,11 +1128,10 @@ static int cpu_gdb_write_register(CPUSH4State *env, uint8_t *mem_buf, int n)
         }
 	return 4;
     } else if (n < 16) {
-        env->gregs[n] = tmp;
+        env->gregs[n - 8] = tmp;
 	return 4;
     } else if (n >= 25 && n < 41) {
 	env->fregs[(n - 25) + ((env->fpscr & FPSCR_FR) ? 16 : 0)] = tmp;
-	return 4;
     } else if (n >= 43 && n < 51) {
 	env->gregs[n - 43] = tmp;
 	return 4;
@@ -1285,17 +1140,17 @@ static int cpu_gdb_write_register(CPUSH4State *env, uint8_t *mem_buf, int n)
 	return 4;
     }
     switch (n) {
-    case 16: env->pc = tmp; break;
-    case 17: env->pr = tmp; break;
-    case 18: env->gbr = tmp; break;
-    case 19: env->vbr = tmp; break;
-    case 20: env->mach = tmp; break;
-    case 21: env->macl = tmp; break;
-    case 22: env->sr = tmp; break;
-    case 23: env->fpul = tmp; break;
-    case 24: env->fpscr = tmp; break;
-    case 41: env->ssr = tmp; break;
-    case 42: env->spc = tmp; break;
+    case 16: env->pc = tmp;
+    case 17: env->pr = tmp;
+    case 18: env->gbr = tmp;
+    case 19: env->vbr = tmp;
+    case 20: env->mach = tmp;
+    case 21: env->macl = tmp;
+    case 22: env->sr = tmp;
+    case 23: env->fpul = tmp;
+    case 24: env->fpscr = tmp;
+    case 41: env->ssr = tmp;
+    case 42: env->spc = tmp;
     default: return 0;
     }
 
@@ -1305,7 +1160,7 @@ static int cpu_gdb_write_register(CPUSH4State *env, uint8_t *mem_buf, int n)
 
 #define NUM_CORE_REGS (32 + 5)
 
-static int cpu_gdb_read_register(CPUMBState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
 	GET_REG32(env->regs[n]);
@@ -1315,7 +1170,7 @@ static int cpu_gdb_read_register(CPUMBState *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUMBState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint32_t tmp;
 
@@ -1335,45 +1190,9 @@ static int cpu_gdb_write_register(CPUMBState *env, uint8_t *mem_buf, int n)
 
 #define NUM_CORE_REGS 49
 
-static int
-read_register_crisv10(CPUCRISState *env, uint8_t *mem_buf, int n)
-{
-    if (n < 15) {
-        GET_REG32(env->regs[n]);
-    }
-
-    if (n == 15) {
-        GET_REG32(env->pc);
-    }
-
-    if (n < 32) {
-        switch (n) {
-        case 16:
-            GET_REG8(env->pregs[n - 16]);
-            break;
-        case 17:
-            GET_REG8(env->pregs[n - 16]);
-            break;
-        case 20:
-        case 21:
-            GET_REG16(env->pregs[n - 16]);
-            break;
-        default:
-            if (n >= 23) {
-                GET_REG32(env->pregs[n - 16]);
-            }
-            break;
-        }
-    }
-    return 0;
-}
-
-static int cpu_gdb_read_register(CPUCRISState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint8_t srs;
-
-    if (env->pregs[PR_VR] < 32)
-        return read_register_crisv10(env, mem_buf, n);
 
     srs = env->pregs[PR_SRS];
     if (n < 16) {
@@ -1398,7 +1217,7 @@ static int cpu_gdb_read_register(CPUCRISState *env, uint8_t *mem_buf, int n)
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUCRISState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     uint32_t tmp;
 
@@ -1429,308 +1248,71 @@ static int cpu_gdb_write_register(CPUCRISState *env, uint8_t *mem_buf, int n)
 }
 #elif defined (TARGET_ALPHA)
 
-#define NUM_CORE_REGS 67
+#define NUM_CORE_REGS 65
 
-static int cpu_gdb_read_register(CPUAlphaState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
-    uint64_t val;
-    CPU_DoubleU d;
-
-    switch (n) {
-    case 0 ... 30:
-        val = env->ir[n];
-        break;
-    case 32 ... 62:
-        d.d = env->fir[n - 32];
-        val = d.ll;
-        break;
-    case 63:
-        val = cpu_alpha_load_fpcr(env);
-        break;
-    case 64:
-        val = env->pc;
-        break;
-    case 66:
-        val = env->unique;
-        break;
-    case 31:
-    case 65:
-        /* 31 really is the zero register; 65 is unassigned in the
-           gdb protocol, but is still required to occupy 8 bytes. */
-        val = 0;
-        break;
-    default:
-        return 0;
+    if (n < 31) {
+       GET_REGL(env->ir[n]);
     }
-    GET_REGL(val);
+    else if (n == 31) {
+       GET_REGL(0);
+    }
+    else if (n<63) {
+       uint64_t val;
+
+       val=*((uint64_t *)&env->fir[n-32]);
+       GET_REGL(val);
+    }
+    else if (n==63) {
+       GET_REGL(env->fpcr);
+    }
+    else if (n==64) {
+       GET_REGL(env->pc);
+    }
+    else {
+       GET_REGL(0);
+    }
+
+    return 0;
 }
 
-static int cpu_gdb_write_register(CPUAlphaState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
-    target_ulong tmp = ldtul_p(mem_buf);
-    CPU_DoubleU d;
+    target_ulong tmp;
+    tmp = ldtul_p(mem_buf);
 
-    switch (n) {
-    case 0 ... 30:
+    if (n < 31) {
         env->ir[n] = tmp;
-        break;
-    case 32 ... 62:
-        d.ll = tmp;
-        env->fir[n - 32] = d.d;
-        break;
-    case 63:
-        cpu_alpha_store_fpcr(env, tmp);
-        break;
-    case 64:
-        env->pc = tmp;
-        break;
-    case 66:
-        env->unique = tmp;
-        break;
-    case 31:
-    case 65:
-        /* 31 really is the zero register; 65 is unassigned in the
-           gdb protocol, but is still required to occupy 8 bytes. */
-        break;
-    default:
-        return 0;
     }
+
+    if (n > 31 && n < 63) {
+        env->fir[n - 32] = ldfl_p(mem_buf);
+    }
+
+    if (n == 64 ) {
+       env->pc=tmp;
+    }
+
     return 8;
-}
-#elif defined (TARGET_S390X)
-
-#define NUM_CORE_REGS S390_NUM_TOTAL_REGS
-
-static int cpu_gdb_read_register(CPUS390XState *env, uint8_t *mem_buf, int n)
-{
-    switch (n) {
-        case S390_PSWM_REGNUM: GET_REGL(env->psw.mask); break;
-        case S390_PSWA_REGNUM: GET_REGL(env->psw.addr); break;
-        case S390_R0_REGNUM ... S390_R15_REGNUM:
-            GET_REGL(env->regs[n-S390_R0_REGNUM]); break;
-        case S390_A0_REGNUM ... S390_A15_REGNUM:
-            GET_REG32(env->aregs[n-S390_A0_REGNUM]); break;
-        case S390_FPC_REGNUM: GET_REG32(env->fpc); break;
-        case S390_F0_REGNUM ... S390_F15_REGNUM:
-            /* XXX */
-            break;
-        case S390_PC_REGNUM: GET_REGL(env->psw.addr); break;
-        case S390_CC_REGNUM:
-            env->cc_op = calc_cc(env, env->cc_op, env->cc_src, env->cc_dst,
-                                 env->cc_vr);
-            GET_REG32(env->cc_op);
-            break;
-    }
-
-    return 0;
-}
-
-static int cpu_gdb_write_register(CPUS390XState *env, uint8_t *mem_buf, int n)
-{
-    target_ulong tmpl;
-    uint32_t tmp32;
-    int r = 8;
-    tmpl = ldtul_p(mem_buf);
-    tmp32 = ldl_p(mem_buf);
-
-    switch (n) {
-        case S390_PSWM_REGNUM: env->psw.mask = tmpl; break;
-        case S390_PSWA_REGNUM: env->psw.addr = tmpl; break;
-        case S390_R0_REGNUM ... S390_R15_REGNUM:
-            env->regs[n-S390_R0_REGNUM] = tmpl; break;
-        case S390_A0_REGNUM ... S390_A15_REGNUM:
-            env->aregs[n-S390_A0_REGNUM] = tmp32; r=4; break;
-        case S390_FPC_REGNUM: env->fpc = tmp32; r=4; break;
-        case S390_F0_REGNUM ... S390_F15_REGNUM:
-            /* XXX */
-            break;
-        case S390_PC_REGNUM: env->psw.addr = tmpl; break;
-        case S390_CC_REGNUM: env->cc_op = tmp32; r=4; break;
-    }
-
-    return r;
-}
-#elif defined (TARGET_LM32)
-
-#include "hw/lm32_pic.h"
-#define NUM_CORE_REGS (32 + 7)
-
-static int cpu_gdb_read_register(CPULM32State *env, uint8_t *mem_buf, int n)
-{
-    if (n < 32) {
-        GET_REG32(env->regs[n]);
-    } else {
-        switch (n) {
-        case 32:
-            GET_REG32(env->pc);
-            break;
-        /* FIXME: put in right exception ID */
-        case 33:
-            GET_REG32(0);
-            break;
-        case 34:
-            GET_REG32(env->eba);
-            break;
-        case 35:
-            GET_REG32(env->deba);
-            break;
-        case 36:
-            GET_REG32(env->ie);
-            break;
-        case 37:
-            GET_REG32(lm32_pic_get_im(env->pic_state));
-            break;
-        case 38:
-            GET_REG32(lm32_pic_get_ip(env->pic_state));
-            break;
-        }
-    }
-    return 0;
-}
-
-static int cpu_gdb_write_register(CPULM32State *env, uint8_t *mem_buf, int n)
-{
-    uint32_t tmp;
-
-    if (n > NUM_CORE_REGS) {
-        return 0;
-    }
-
-    tmp = ldl_p(mem_buf);
-
-    if (n < 32) {
-        env->regs[n] = tmp;
-    } else {
-        switch (n) {
-        case 32:
-            env->pc = tmp;
-            break;
-        case 34:
-            env->eba = tmp;
-            break;
-        case 35:
-            env->deba = tmp;
-            break;
-        case 36:
-            env->ie = tmp;
-            break;
-        case 37:
-            lm32_pic_set_im(env->pic_state, tmp);
-            break;
-        case 38:
-            lm32_pic_set_ip(env->pic_state, tmp);
-            break;
-        }
-    }
-    return 4;
-}
-#elif defined(TARGET_XTENSA)
-
-/* Use num_core_regs to see only non-privileged registers in an unmodified gdb.
- * Use num_regs to see all registers. gdb modification is required for that:
- * reset bit 0 in the 'flags' field of the registers definitions in the
- * gdb/xtensa-config.c inside gdb source tree or inside gdb overlay.
- */
-#define NUM_CORE_REGS (env->config->gdb_regmap.num_regs)
-#define num_g_regs NUM_CORE_REGS
-
-static int cpu_gdb_read_register(CPUXtensaState *env, uint8_t *mem_buf, int n)
-{
-    const XtensaGdbReg *reg = env->config->gdb_regmap.reg + n;
-
-    if (n < 0 || n >= env->config->gdb_regmap.num_regs) {
-        return 0;
-    }
-
-    switch (reg->type) {
-    case 9: /*pc*/
-        GET_REG32(env->pc);
-        break;
-
-    case 1: /*ar*/
-        xtensa_sync_phys_from_window(env);
-        GET_REG32(env->phys_regs[(reg->targno & 0xff) % env->config->nareg]);
-        break;
-
-    case 2: /*SR*/
-        GET_REG32(env->sregs[reg->targno & 0xff]);
-        break;
-
-    case 3: /*UR*/
-        GET_REG32(env->uregs[reg->targno & 0xff]);
-        break;
-
-    case 8: /*a*/
-        GET_REG32(env->regs[reg->targno & 0x0f]);
-        break;
-
-    default:
-        qemu_log("%s from reg %d of unsupported type %d\n",
-                __func__, n, reg->type);
-        return 0;
-    }
-}
-
-static int cpu_gdb_write_register(CPUXtensaState *env, uint8_t *mem_buf, int n)
-{
-    uint32_t tmp;
-    const XtensaGdbReg *reg = env->config->gdb_regmap.reg + n;
-
-    if (n < 0 || n >= env->config->gdb_regmap.num_regs) {
-        return 0;
-    }
-
-    tmp = ldl_p(mem_buf);
-
-    switch (reg->type) {
-    case 9: /*pc*/
-        env->pc = tmp;
-        break;
-
-    case 1: /*ar*/
-        env->phys_regs[(reg->targno & 0xff) % env->config->nareg] = tmp;
-        xtensa_sync_window_from_phys(env);
-        break;
-
-    case 2: /*SR*/
-        env->sregs[reg->targno & 0xff] = tmp;
-        break;
-
-    case 3: /*UR*/
-        env->uregs[reg->targno & 0xff] = tmp;
-        break;
-
-    case 8: /*a*/
-        env->regs[reg->targno & 0x0f] = tmp;
-        break;
-
-    default:
-        qemu_log("%s to reg %d of unsupported type %d\n",
-                __func__, n, reg->type);
-        return 0;
-    }
-
-    return 4;
 }
 #else
 
 #define NUM_CORE_REGS 0
 
-static int cpu_gdb_read_register(CPUArchState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_read_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     return 0;
 }
 
-static int cpu_gdb_write_register(CPUArchState *env, uint8_t *mem_buf, int n)
+static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
 {
     return 0;
 }
 
 #endif
 
-#if !defined(TARGET_XTENSA)
 static int num_g_regs = NUM_CORE_REGS;
-#endif
 
 #ifdef GDB_CORE_XML
 /* Encode data using the encoding for 'x' packets.  */
@@ -1756,6 +1338,7 @@ static int memtox(char *buf, const char *mem, int len)
 
 static const char *get_feature_xml(const char *p, const char **newp)
 {
+    extern const char *const xml_builtin[][2];
     size_t len;
     int i;
     const char *name;
@@ -1797,7 +1380,7 @@ static const char *get_feature_xml(const char *p, const char **newp)
 }
 #endif
 
-static int gdb_read_register(CPUArchState *env, uint8_t *mem_buf, int reg)
+static int gdb_read_register(CPUState *env, uint8_t *mem_buf, int reg)
 {
     GDBRegisterState *r;
 
@@ -1812,7 +1395,7 @@ static int gdb_read_register(CPUArchState *env, uint8_t *mem_buf, int reg)
     return 0;
 }
 
-static int gdb_write_register(CPUArchState *env, uint8_t *mem_buf, int reg)
+static int gdb_write_register(CPUState *env, uint8_t *mem_buf, int reg)
 {
     GDBRegisterState *r;
 
@@ -1827,14 +1410,13 @@ static int gdb_write_register(CPUArchState *env, uint8_t *mem_buf, int reg)
     return 0;
 }
 
-#if !defined(TARGET_XTENSA)
 /* Register a supplemental set of CPU registers.  If g_pos is nonzero it
    specifies the first register number and these registers are included in
    a standard "g" packet.  Direction is relative to gdb, i.e. get_reg is
    gdb reading a CPU register, and set_reg is gdb modifying a CPU register.
  */
 
-void gdb_register_coprocessor(CPUArchState * env,
+void gdb_register_coprocessor(CPUState * env,
                              gdb_reg_cb get_reg, gdb_reg_cb set_reg,
                              int num_regs, const char *xml, int g_pos)
 {
@@ -1842,6 +1424,12 @@ void gdb_register_coprocessor(CPUArchState * env,
     GDBRegisterState **p;
     static int last_reg = NUM_CORE_REGS;
 
+    s = (GDBRegisterState *)qemu_mallocz(sizeof(GDBRegisterState));
+    s->base_reg = last_reg;
+    s->num_regs = num_regs;
+    s->get_reg = get_reg;
+    s->set_reg = set_reg;
+    s->xml = xml;
     p = &env->gdb_regs;
     while (*p) {
         /* Check for duplicates.  */
@@ -1849,14 +1437,6 @@ void gdb_register_coprocessor(CPUArchState * env,
             return;
         p = &(*p)->next;
     }
-
-    s = g_new0(GDBRegisterState, 1);
-    s->base_reg = last_reg;
-    s->num_regs = num_regs;
-    s->get_reg = get_reg;
-    s->set_reg = set_reg;
-    s->xml = xml;
-
     /* Add to end of list.  */
     last_reg += num_regs;
     *p = s;
@@ -1869,7 +1449,6 @@ void gdb_register_coprocessor(CPUArchState * env,
         }
     }
 }
-#endif
 
 #ifndef CONFIG_USER_ONLY
 static const int xlat_gdb_type[] = {
@@ -1881,7 +1460,7 @@ static const int xlat_gdb_type[] = {
 
 static int gdb_breakpoint_insert(target_ulong addr, target_ulong len, int type)
 {
-    CPUArchState *env;
+    CPUState *env;
     int err = 0;
 
     if (kvm_enabled())
@@ -1915,7 +1494,7 @@ static int gdb_breakpoint_insert(target_ulong addr, target_ulong len, int type)
 
 static int gdb_breakpoint_remove(target_ulong addr, target_ulong len, int type)
 {
-    CPUArchState *env;
+    CPUState *env;
     int err = 0;
 
     if (kvm_enabled())
@@ -1948,7 +1527,7 @@ static int gdb_breakpoint_remove(target_ulong addr, target_ulong len, int type)
 
 static void gdb_breakpoint_remove_all(void)
 {
-    CPUArchState *env;
+    CPUState *env;
 
     if (kvm_enabled()) {
         kvm_remove_all_breakpoints(gdbserver_state->c_cpu);
@@ -1965,9 +1544,9 @@ static void gdb_breakpoint_remove_all(void)
 
 static void gdb_set_cpu_pc(GDBState *s, target_ulong pc)
 {
-    cpu_synchronize_state(s->c_cpu);
 #if defined(TARGET_I386)
     s->c_cpu->eip = pc;
+    cpu_synchronize_state(s->c_cpu, 1);
 #elif defined (TARGET_PPC)
     s->c_cpu->nip = pc;
 #elif defined (TARGET_SPARC)
@@ -1978,35 +1557,31 @@ static void gdb_set_cpu_pc(GDBState *s, target_ulong pc)
 #elif defined (TARGET_SH4)
     s->c_cpu->pc = pc;
 #elif defined (TARGET_MIPS)
-    s->c_cpu->active_tc.PC = pc & ~(target_ulong)1;
-    if (pc & 1) {
-        s->c_cpu->hflags |= MIPS_HFLAG_M16;
-    } else {
-        s->c_cpu->hflags &= ~(MIPS_HFLAG_M16);
-    }
+    s->c_cpu->active_tc.PC = pc;
 #elif defined (TARGET_MICROBLAZE)
     s->c_cpu->sregs[SR_PC] = pc;
-#elif defined(TARGET_OPENRISC)
-    s->c_cpu->pc = pc;
 #elif defined (TARGET_CRIS)
     s->c_cpu->pc = pc;
 #elif defined (TARGET_ALPHA)
     s->c_cpu->pc = pc;
-#elif defined (TARGET_S390X)
-    s->c_cpu->psw.addr = pc;
-#elif defined (TARGET_LM32)
-    s->c_cpu->pc = pc;
-#elif defined(TARGET_XTENSA)
-    s->c_cpu->pc = pc;
 #endif
 }
 
-static CPUArchState *find_cpu(uint32_t thread_id)
+static inline int gdb_id(CPUState *env)
 {
-    CPUArchState *env;
+#if defined(CONFIG_USER_ONLY) && defined(USE_NPTL)
+    return env->host_tid;
+#else
+    return env->cpu_index + 1;
+#endif
+}
+
+static CPUState *find_cpu(uint32_t thread_id)
+{
+    CPUState *env;
 
     for (env = first_cpu; env != NULL; env = env->next_cpu) {
-        if (cpu_index(env) == thread_id) {
+        if (gdb_id(env) == thread_id) {
             return env;
         }
     }
@@ -2016,7 +1591,7 @@ static CPUArchState *find_cpu(uint32_t thread_id)
 
 static int gdb_handle_packet(GDBState *s, const char *line_buf)
 {
-    CPUArchState *env;
+    CPUState *env;
     const char *p;
     uint32_t thread;
     int ch, reg_size, type, res;
@@ -2034,7 +1609,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
     case '?':
         /* TODO: Make this return the correct value for user-mode.  */
         snprintf(buf, sizeof(buf), "T%02xthread:%02x;", GDB_SIGNAL_TRAP,
-                 cpu_index(s->c_cpu));
+                 gdb_id(s->c_cpu));
         put_packet(s, buf);
         /* Remove all the breakpoints when this query is issued,
          * because gdb is doing and initial connect and the state
@@ -2056,74 +1631,13 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             s->signal = 0;
         gdb_continue(s);
         return RS_IDLE;
-    case 'v':
-        if (strncmp(p, "Cont", 4) == 0) {
-            int res_signal, res_thread;
-
-            p += 4;
-            if (*p == '?') {
-                put_packet(s, "vCont;c;C;s;S");
-                break;
-            }
-            res = 0;
-            res_signal = 0;
-            res_thread = 0;
-            while (*p) {
-                int action, signal;
-
-                if (*p++ != ';') {
-                    res = 0;
-                    break;
-                }
-                action = *p++;
-                signal = 0;
-                if (action == 'C' || action == 'S') {
-                    signal = strtoul(p, (char **)&p, 16);
-                } else if (action != 'c' && action != 's') {
-                    res = 0;
-                    break;
-                }
-                thread = 0;
-                if (*p == ':') {
-                    thread = strtoull(p+1, (char **)&p, 16);
-                }
-                action = tolower(action);
-                if (res == 0 || (res == 'c' && action == 's')) {
-                    res = action;
-                    res_signal = signal;
-                    res_thread = thread;
-                }
-            }
-            if (res) {
-                if (res_thread != -1 && res_thread != 0) {
-                    env = find_cpu(res_thread);
-                    if (env == NULL) {
-                        put_packet(s, "E22");
-                        break;
-                    }
-                    s->c_cpu = env;
-                }
-                if (res == 's') {
-                    cpu_single_step(s->c_cpu, sstep_flags);
-                }
-                s->signal = res_signal;
-                gdb_continue(s);
-                return RS_IDLE;
-            }
-            break;
-        } else {
-            goto unknown_command;
-        }
     case 'k':
-#ifdef CONFIG_USER_ONLY
         /* Kill the target */
         fprintf(stderr, "\nQEMU: Terminated via GDBstub\n");
         exit(0);
-#endif
     case 'D':
         /* Detach packet */
         gdb_breakpoint_remove_all();
-        gdb_syscall_mode = GDB_SYS_DISABLED;
         gdb_continue(s);
         put_packet(s, "OK");
         break;
@@ -2150,10 +1664,8 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             if (*p == ',')
                 p++;
             type = *p;
-            if (s->current_syscall_cb) {
-                s->current_syscall_cb(s->c_cpu, ret, err);
-                s->current_syscall_cb = NULL;
-            }
+            if (gdb_current_syscall_cb)
+                gdb_current_syscall_cb(s->c_cpu, ret, err);
             if (type == 'C') {
                 put_packet(s, "T02");
             } else {
@@ -2162,8 +1674,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
         }
         break;
     case 'g':
-        cpu_synchronize_state(s->g_cpu);
-        env = s->g_cpu;
+        cpu_synchronize_state(s->g_cpu, 0);
         len = 0;
         for (addr = 0; addr < num_g_regs; addr++) {
             reg_size = gdb_read_register(s->g_cpu, mem_buf + len, addr);
@@ -2173,8 +1684,6 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
         put_packet(s, buf);
         break;
     case 'G':
-        cpu_synchronize_state(s->g_cpu);
-        env = s->g_cpu;
         registers = mem_buf;
         len = strlen(p) / 2;
         hextomem((uint8_t *)registers, p, len);
@@ -2183,6 +1692,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             len -= reg_size;
             registers += reg_size;
         }
+        cpu_synchronize_state(s->g_cpu, 1);
         put_packet(s, "OK");
         break;
     case 'm':
@@ -2190,7 +1700,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
         if (*p == ',')
             p++;
         len = strtoull(p, NULL, 16);
-        if (target_memory_rw_debug(s->g_cpu, addr, mem_buf, len, 0) != 0) {
+        if (cpu_memory_rw_debug(s->g_cpu, addr, mem_buf, len, 0) != 0) {
             put_packet (s, "E14");
         } else {
             memtohex(buf, mem_buf, len);
@@ -2205,11 +1715,10 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
         if (*p == ':')
             p++;
         hextomem(mem_buf, p, len);
-        if (target_memory_rw_debug(s->g_cpu, addr, mem_buf, len, 1) != 0) {
+        if (cpu_memory_rw_debug(s->g_cpu, addr, mem_buf, len, 1) != 0)
             put_packet(s, "E14");
-        } else {
+        else
             put_packet(s, "OK");
-        }
         break;
     case 'p':
         /* Older gdb are really dumb, and don't use 'g' if 'p' is avaialable.
@@ -2329,7 +1838,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
         } else if (strcmp(p,"sThreadInfo") == 0) {
         report_cpuinfo:
             if (s->query_cpu) {
-                snprintf(buf, sizeof(buf), "m%x", cpu_index(s->query_cpu));
+                snprintf(buf, sizeof(buf), "m%x", gdb_id(s->query_cpu));
                 put_packet(s, buf);
                 s->query_cpu = s->query_cpu->next_cpu;
             } else
@@ -2339,7 +1848,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             thread = strtoull(p+16, (char **)&p, 16);
             env = find_cpu(thread);
             if (env != NULL) {
-                cpu_synchronize_state(env);
+                cpu_synchronize_state(env, 0);
                 len = snprintf((char *)mem_buf, sizeof(mem_buf),
                                "CPU#%d [%s]", env->cpu_index,
                                env->halted ? "halted " : "running");
@@ -2372,7 +1881,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             hextomem(mem_buf, p + 5, len);
             len = len / 2;
             mem_buf[len++] = 0;
-            qemu_chr_be_write(s->mon_chr, mem_buf, len);
+            qemu_chr_read(s->mon_chr, mem_buf, len);
             put_packet(s, "OK");
             break;
         }
@@ -2438,31 +1947,29 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
     return RS_IDLE;
 }
 
-void gdb_set_stop_cpu(CPUArchState *env)
+void gdb_set_stop_cpu(CPUState *env)
 {
     gdbserver_state->c_cpu = env;
     gdbserver_state->g_cpu = env;
 }
 
 #ifndef CONFIG_USER_ONLY
-static void gdb_vm_state_change(void *opaque, int running, RunState state)
+static void gdb_vm_state_change(void *opaque, int running, int reason)
 {
     GDBState *s = gdbserver_state;
-    CPUArchState *env = s->c_cpu;
+    CPUState *env = s->c_cpu;
     char buf[256];
     const char *type;
     int ret;
 
-    if (running || s->state == RS_INACTIVE) {
+    if (running || (reason != EXCP_DEBUG && reason != EXCP_INTERRUPT) ||
+        s->state == RS_INACTIVE || s->state == RS_SYSCALL)
         return;
-    }
-    /* Is there a GDB syscall waiting to be sent?  */
-    if (s->current_syscall_cb) {
-        put_packet(s, s->syscall_buf);
-        return;
-    }
-    switch (state) {
-    case RUN_STATE_DEBUG:
+
+    /* disable single step if it was enable */
+    cpu_single_step(env, 0);
+
+    if (reason == EXCP_DEBUG) {
         if (env->watchpoint_hit) {
             switch (env->watchpoint_hit->flags & BP_MEM_ACCESS) {
             case BP_MEM_READ:
@@ -2477,46 +1984,19 @@ static void gdb_vm_state_change(void *opaque, int running, RunState state)
             }
             snprintf(buf, sizeof(buf),
                      "T%02xthread:%02x;%swatch:" TARGET_FMT_lx ";",
-                     GDB_SIGNAL_TRAP, cpu_index(env), type,
+                     GDB_SIGNAL_TRAP, gdb_id(env), type,
                      env->watchpoint_hit->vaddr);
+            put_packet(s, buf);
             env->watchpoint_hit = NULL;
-            goto send_packet;
+            return;
         }
-        tb_flush(env);
+	tb_flush(env);
         ret = GDB_SIGNAL_TRAP;
-        break;
-    case RUN_STATE_PAUSED:
+    } else {
         ret = GDB_SIGNAL_INT;
-        break;
-    case RUN_STATE_SHUTDOWN:
-        ret = GDB_SIGNAL_QUIT;
-        break;
-    case RUN_STATE_IO_ERROR:
-        ret = GDB_SIGNAL_IO;
-        break;
-    case RUN_STATE_WATCHDOG:
-        ret = GDB_SIGNAL_ALRM;
-        break;
-    case RUN_STATE_INTERNAL_ERROR:
-        ret = GDB_SIGNAL_ABRT;
-        break;
-    case RUN_STATE_SAVE_VM:
-    case RUN_STATE_RESTORE_VM:
-        return;
-    case RUN_STATE_FINISH_MIGRATE:
-        ret = GDB_SIGNAL_XCPU;
-        break;
-    default:
-        ret = GDB_SIGNAL_UNKNOWN;
-        break;
     }
-    snprintf(buf, sizeof(buf), "T%02xthread:%02x;", ret, cpu_index(env));
-
-send_packet:
+    snprintf(buf, sizeof(buf), "T%02xthread:%02x;", ret, gdb_id(env));
     put_packet(s, buf);
-
-    /* disable single step if it was enabled */
-    cpu_single_step(env, 0);
 }
 #endif
 
@@ -2528,8 +2008,8 @@ send_packet:
 void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
 {
     va_list va;
+    char buf[256];
     char *p;
-    char *p_end;
     target_ulong addr;
     uint64_t i64;
     GDBState *s;
@@ -2537,13 +2017,14 @@ void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
     s = gdbserver_state;
     if (!s)
         return;
-    s->current_syscall_cb = cb;
+    gdb_current_syscall_cb = cb;
+    s->state = RS_SYSCALL;
 #ifndef CONFIG_USER_ONLY
-    vm_stop(RUN_STATE_DEBUG);
+    vm_stop(EXCP_DEBUG);
 #endif
+    s->state = RS_IDLE;
     va_start(va, fmt);
-    p = s->syscall_buf;
-    p_end = &s->syscall_buf[sizeof(s->syscall_buf)];
+    p = buf;
     *(p++) = 'F';
     while (*fmt) {
         if (*fmt == '%') {
@@ -2551,17 +2032,17 @@ void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
             switch (*fmt++) {
             case 'x':
                 addr = va_arg(va, target_ulong);
-                p += snprintf(p, p_end - p, TARGET_FMT_lx, addr);
+                p += snprintf(p, &buf[sizeof(buf)] - p, TARGET_FMT_lx, addr);
                 break;
             case 'l':
                 if (*(fmt++) != 'x')
                     goto bad_format;
                 i64 = va_arg(va, uint64_t);
-                p += snprintf(p, p_end - p, "%" PRIx64, i64);
+                p += snprintf(p, &buf[sizeof(buf)] - p, "%" PRIx64, i64);
                 break;
             case 's':
                 addr = va_arg(va, target_ulong);
-                p += snprintf(p, p_end - p, TARGET_FMT_lx "/%x",
+                p += snprintf(p, &buf[sizeof(buf)] - p, TARGET_FMT_lx "/%x",
                               addr, va_arg(va, int));
                 break;
             default:
@@ -2576,16 +2057,10 @@ void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
     }
     *p = 0;
     va_end(va);
+    put_packet(s, buf);
 #ifdef CONFIG_USER_ONLY
-    put_packet(s, s->syscall_buf);
     gdb_handlesig(s->c_cpu, 0);
 #else
-    /* In this case wait to send the syscall packet until notification that
-       the CPU has stopped.  This must be done because if the packet is sent
-       now the reply from the syscall request could be received while the CPU
-       is still in the running state, which can cause packets to be dropped
-       and state transition 'T' packets to be sent while the syscall is still
-       being processed.  */
     cpu_exit(s->c_cpu);
 #endif
 }
@@ -2616,10 +2091,10 @@ static void gdb_read_byte(GDBState *s, int ch)
         if (ch != '$')
             return;
     }
-    if (runstate_is_running()) {
+    if (vm_running) {
         /* when the CPU is running, we cannot do anything except stop
            it when receiving a char */
-        vm_stop(RUN_STATE_PAUSED);
+        vm_stop(EXCP_INTERRUPT);
     } else
 #endif
     {
@@ -2666,32 +2141,6 @@ static void gdb_read_byte(GDBState *s, int ch)
     }
 }
 
-/* Tell the remote gdb that the process has exited.  */
-void gdb_exit(CPUArchState *env, int code)
-{
-  GDBState *s;
-  char buf[4];
-
-  s = gdbserver_state;
-  if (!s) {
-      return;
-  }
-#ifdef CONFIG_USER_ONLY
-  if (gdbserver_fd < 0 || s->fd < 0) {
-      return;
-  }
-#endif
-
-  snprintf(buf, sizeof(buf), "W%02x", (uint8_t)code);
-  put_packet(s, buf);
-
-#ifndef CONFIG_USER_ONLY
-  if (s->chr) {
-      qemu_chr_delete(s->chr);
-  }
-#endif
-}
-
 #ifdef CONFIG_USER_ONLY
 int
 gdb_queuesig (void)
@@ -2707,7 +2156,7 @@ gdb_queuesig (void)
 }
 
 int
-gdb_handlesig (CPUArchState *env, int sig)
+gdb_handlesig (CPUState *env, int sig)
 {
   GDBState *s;
   char buf[256];
@@ -2745,7 +2194,7 @@ gdb_handlesig (CPUArchState *env, int sig)
         }
       else if (n == 0 || errno != EAGAIN)
         {
-          /* XXX: Connection closed.  Should probably wait for another
+          /* XXX: Connection closed.  Should probably wait for annother
              connection before continuing.  */
           return sig;
         }
@@ -2755,8 +2204,22 @@ gdb_handlesig (CPUArchState *env, int sig)
   return sig;
 }
 
+/* Tell the remote gdb that the process has exited.  */
+void gdb_exit(CPUState *env, int code)
+{
+  GDBState *s;
+  char buf[4];
+
+  s = gdbserver_state;
+  if (gdbserver_fd < 0 || s->fd < 0)
+    return;
+
+  snprintf(buf, sizeof(buf), "W%02x", code);
+  put_packet(s, buf);
+}
+
 /* Tell the remote gdb that the process has exited due to SIG.  */
-void gdb_signalled(CPUArchState *env, int sig)
+void gdb_signalled(CPUState *env, int sig)
 {
   GDBState *s;
   char buf[4];
@@ -2783,9 +2246,6 @@ static void gdb_accept(void)
             perror("accept");
             return;
         } else if (fd >= 0) {
-#ifndef _WIN32
-            fcntl(fd, F_SETFD, FD_CLOEXEC);
-#endif
             break;
         }
     }
@@ -2794,7 +2254,7 @@ static void gdb_accept(void)
     val = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
 
-    s = g_malloc0(sizeof(GDBState));
+    s = qemu_mallocz(sizeof(GDBState));
     s->c_cpu = first_cpu;
     s->g_cpu = first_cpu;
     s->fd = fd;
@@ -2815,9 +2275,6 @@ static int gdbserver_open(int port)
         perror("socket");
         return -1;
     }
-#ifndef _WIN32
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-#endif
 
     /* allow fast reuse */
     val = 1;
@@ -2829,13 +2286,11 @@ static int gdbserver_open(int port)
     ret = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
     if (ret < 0) {
         perror("bind");
-        close(fd);
         return -1;
     }
     ret = listen(fd, 0);
     if (ret < 0) {
         perror("listen");
-        close(fd);
         return -1;
     }
     return fd;
@@ -2852,7 +2307,7 @@ int gdbserver_start(int port)
 }
 
 /* Disable gdb stub for child processes.  */
-void gdbserver_fork(CPUArchState *env)
+void gdbserver_fork(CPUState *env)
 {
     GDBState *s = gdbserver_state;
     if (gdbserver_fd < 0 || s->fd < 0)
@@ -2882,8 +2337,8 @@ static void gdb_chr_receive(void *opaque, const uint8_t *buf, int size)
 static void gdb_chr_event(void *opaque, int event)
 {
     switch (event) {
-    case CHR_EVENT_OPENED:
-        vm_stop(RUN_STATE_PAUSED);
+    case CHR_EVENT_RESET:
+        vm_stop(EXCP_INTERRUPT);
         gdb_has_xml = 0;
         break;
     default:
@@ -2923,9 +2378,8 @@ static int gdb_monitor_write(CharDriverState *chr, const uint8_t *buf, int len)
 #ifndef _WIN32
 static void gdb_sigterm_handler(int signal)
 {
-    if (runstate_is_running()) {
-        vm_stop(RUN_STATE_PAUSED);
-    }
+    if (vm_running)
+        vm_stop(EXCP_INTERRUPT);
 }
 #endif
 
@@ -2954,7 +2408,7 @@ int gdbserver_start(const char *device)
             sigaction(SIGINT, &act, NULL);
         }
 #endif
-        chr = qemu_chr_new("gdb", device, NULL);
+        chr = qemu_chr_open("gdb", device, NULL);
         if (!chr)
             return -1;
 
@@ -2964,18 +2418,18 @@ int gdbserver_start(const char *device)
 
     s = gdbserver_state;
     if (!s) {
-        s = g_malloc0(sizeof(GDBState));
+        s = qemu_mallocz(sizeof(GDBState));
         gdbserver_state = s;
 
         qemu_add_vm_change_state_handler(gdb_vm_state_change, NULL);
 
         /* Initialize a monitor terminal for gdb */
-        mon_chr = g_malloc0(sizeof(*mon_chr));
+        mon_chr = qemu_mallocz(sizeof(*mon_chr));
         mon_chr->chr_write = gdb_monitor_write;
         monitor_init(mon_chr, 0);
     } else {
         if (s->chr)
-            qemu_chr_delete(s->chr);
+            qemu_chr_close(s->chr);
         mon_chr = s->mon_chr;
         memset(s, 0, sizeof(GDBState));
     }
@@ -2984,7 +2438,6 @@ int gdbserver_start(const char *device)
     s->chr = chr;
     s->state = chr ? RS_IDLE : RS_INACTIVE;
     s->mon_chr = mon_chr;
-    s->current_syscall_cb = NULL;
 
     return 0;
 }

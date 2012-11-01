@@ -14,19 +14,33 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA  02110-1301 USA
  */
-#include "cpu.h"
-#include "dyngen-exec.h"
-#include "helper.h"
+#include "exec.h"
+#include "helpers.h"
 
 #define SIGNBIT (uint32_t)0x80000000
 #define SIGNBIT64 ((uint64_t)1 << 63)
 
-static void raise_exception(int tt)
+void raise_exception(int tt)
 {
     env->exception_index = tt;
-    cpu_loop_exit(env);
+    cpu_loop_exit();
+}
+
+/* thread support */
+
+static spinlock_t global_cpu_lock = SPIN_LOCK_UNLOCKED;
+
+void cpu_lock(void)
+{
+    spin_lock(&global_cpu_lock);
+}
+
+void cpu_unlock(void)
+{
+    spin_unlock(&global_cpu_lock);
 }
 
 uint32_t HELPER(neon_tbl)(uint32_t ireg, uint32_t def,
@@ -53,9 +67,10 @@ uint32_t HELPER(neon_tbl)(uint32_t ireg, uint32_t def,
 
 #if !defined(CONFIG_USER_ONLY)
 
-#include "softmmu_exec.h"
+static void do_unaligned_access (target_ulong addr, int is_write, int is_user, void *retaddr);
 
 #define MMUSUFFIX _mmu
+//#define ALIGNED_ONLY  1
 
 #define SHIFT 0
 #include "softmmu_template.h"
@@ -69,37 +84,67 @@ uint32_t HELPER(neon_tbl)(uint32_t ireg, uint32_t def,
 #define SHIFT 3
 #include "softmmu_template.h"
 
+static void do_unaligned_access (target_ulong addr, int is_write, int mmu_idx, void *retaddr)
+{
+    //printf("::UNALIGNED:: addr=%lx is_write=%d is_user=%d retaddr=%p\n", addr, is_write, is_user, retaddr);
+    if (mmu_idx)
+    {
+        env = cpu_single_env;
+        env->cp15.c5_data = 0x00000001;  /* corresponds to an alignment fault */
+        env->cp15.c6_data = addr;
+        env->exception_index = EXCP_DATA_ABORT;
+        cpu_loop_exit();
+    }
+}
+
 /* try to fill the TLB and return an exception if error. If retaddr is
    NULL, it means that the function was called in C code (i.e. not
    from generated code or from helper.c) */
 /* XXX: fix it to restore all registers */
-void tlb_fill(CPUARMState *env1, target_ulong addr, int is_write, int mmu_idx,
-              uintptr_t retaddr)
+void tlb_fill (target_ulong addr, int is_write, int mmu_idx, void *retaddr)
 {
     TranslationBlock *tb;
-    CPUARMState *saved_env;
+    CPUState *saved_env;
+    unsigned long pc;
     int ret;
 
+    /* XXX: hack to restore env in all cases, even if not called from
+       generated code */
     saved_env = env;
-    env = env1;
-    ret = cpu_arm_handle_mmu_fault(env, addr, is_write, mmu_idx);
+    env = cpu_single_env;
+    ret = cpu_arm_handle_mmu_fault(env, addr, is_write, mmu_idx, 1);
     if (unlikely(ret)) {
         if (retaddr) {
             /* now we have a real cpu fault */
-            tb = tb_find_pc(retaddr);
+            pc = (unsigned long)retaddr;
+            tb = tb_find_pc(pc);
             if (tb) {
                 /* the PC is inside the translated code. It means that we have
                    a virtual CPU fault */
-                cpu_restore_state(tb, env, retaddr);
+                cpu_restore_state(tb, env, pc, NULL);
             }
         }
         raise_exception(env->exception_index);
     }
     env = saved_env;
 }
+
+/* copy a string from the simulated virtual space to a buffer in QEMU */
+void vstrcpy(target_ulong ptr, char *buf, int max)
+{
+    int  index;
+
+    if (buf == NULL) return;
+
+    for (index = 0; index < max; index += 1) {
+        cpu_physical_memory_read(ptr + index, buf + index, 1);
+        if (buf[index] == 0)
+            break;
+    }
+}
 #endif
 
-/* FIXME: Pass an explicit pointer to QF to CPUARMState, and move saturating
+/* FIXME: Pass an axplicit pointer to QF to CPUState, and move saturating
    instructions into helper.c  */
 uint32_t HELPER(add_setq)(uint32_t a, uint32_t b)
 {
@@ -234,13 +279,13 @@ void HELPER(wfi)(void)
 {
     env->exception_index = EXCP_HLT;
     env->halted = 1;
-    cpu_loop_exit(env);
+    cpu_loop_exit();
 }
 
 void HELPER(exception)(uint32_t excp)
 {
     env->exception_index = excp;
-    cpu_loop_exit(env);
+    cpu_loop_exit();
 }
 
 uint32_t HELPER(cpsr_read)(void)
@@ -283,46 +328,6 @@ void HELPER(set_user_reg)(uint32_t regno, uint32_t val)
     } else {
         env->regs[regno] = val;
     }
-}
-
-void HELPER(set_cp_reg)(CPUARMState *env, void *rip, uint32_t value)
-{
-    const ARMCPRegInfo *ri = rip;
-    int excp = ri->writefn(env, ri, value);
-    if (excp) {
-        raise_exception(excp);
-    }
-}
-
-uint32_t HELPER(get_cp_reg)(CPUARMState *env, void *rip)
-{
-    const ARMCPRegInfo *ri = rip;
-    uint64_t value;
-    int excp = ri->readfn(env, ri, &value);
-    if (excp) {
-        raise_exception(excp);
-    }
-    return value;
-}
-
-void HELPER(set_cp_reg64)(CPUARMState *env, void *rip, uint64_t value)
-{
-    const ARMCPRegInfo *ri = rip;
-    int excp = ri->writefn(env, ri, value);
-    if (excp) {
-        raise_exception(excp);
-    }
-}
-
-uint64_t HELPER(get_cp_reg64)(CPUARMState *env, void *rip)
-{
-    const ARMCPRegInfo *ri = rip;
-    uint64_t value;
-    int excp = ri->readfn(env, ri, &value);
-    if (excp) {
-        raise_exception(excp);
-    }
-    return value;
 }
 
 /* ??? Flag setting arithmetic is awkward because we need to do comparisons.
@@ -405,6 +410,14 @@ uint32_t HELPER(sar)(uint32_t x, uint32_t i)
     return (int32_t)x >> shift;
 }
 
+uint32_t HELPER(ror)(uint32_t x, uint32_t i)
+{
+    int shift = i & 0xff;
+    if (shift == 0)
+        return x;
+    return (x >> shift) | (x << (32 - shift));
+}
+
 uint32_t HELPER(shl_cc)(uint32_t x, uint32_t i)
 {
     int shift = i & 0xff;
@@ -463,4 +476,111 @@ uint32_t HELPER(ror_cc)(uint32_t x, uint32_t i)
         env->CF = (x >> (shift - 1)) & 1;
         return ((uint32_t)x >> shift) | (x << (32 - shift));
     }
+}
+
+uint64_t HELPER(neon_add_saturate_s64)(uint64_t src1, uint64_t src2)
+{
+    uint64_t res;
+
+    res = src1 + src2;
+    if (((res ^ src1) & SIGNBIT64) && !((src1 ^ src2) & SIGNBIT64)) {
+        env->QF = 1;
+        res = ((int64_t)src1 >> 63) ^ ~SIGNBIT64;
+    }
+    return res;
+}
+
+uint64_t HELPER(neon_add_saturate_u64)(uint64_t src1, uint64_t src2)
+{
+    uint64_t res;
+
+    res = src1 + src2;
+    if (res < src1) {
+        env->QF = 1;
+        res = ~(uint64_t)0;
+    }
+    return res;
+}
+
+uint64_t HELPER(neon_sub_saturate_s64)(uint64_t src1, uint64_t src2)
+{
+    uint64_t res;
+
+    res = src1 - src2;
+    if (((res ^ src1) & SIGNBIT64) && ((src1 ^ src2) & SIGNBIT64)) {
+        env->QF = 1;
+        res = ((int64_t)src1 >> 63) ^ ~SIGNBIT64;
+    }
+    return res;
+}
+
+uint64_t HELPER(neon_sub_saturate_u64)(uint64_t src1, uint64_t src2)
+{
+    uint64_t res;
+
+    if (src1 < src2) {
+        env->QF = 1;
+        res = 0;
+    } else {
+        res = src1 - src2;
+    }
+    return res;
+}
+
+/* These need to return a pair of value, so still use T0/T1.  */
+/* Transpose.  Argument order is rather strange to avoid special casing
+   the tranlation code.
+   On input T0 = rm, T1 = rd.  On output T0 = rd, T1 = rm  */
+void HELPER(neon_trn_u8)(void)
+{
+    uint32_t rd;
+    uint32_t rm;
+    rd = ((T0 & 0x00ff00ff) << 8) | (T1 & 0x00ff00ff);
+    rm = ((T1 & 0xff00ff00) >> 8) | (T0 & 0xff00ff00);
+    T0 = rd;
+    T1 = rm;
+}
+
+void HELPER(neon_trn_u16)(void)
+{
+    uint32_t rd;
+    uint32_t rm;
+    rd = (T0 << 16) | (T1 & 0xffff);
+    rm = (T1 >> 16) | (T0 & 0xffff0000);
+    T0 = rd;
+    T1 = rm;
+}
+
+/* Worker routines for zip and unzip.  */
+void HELPER(neon_unzip_u8)(void)
+{
+    uint32_t rd;
+    uint32_t rm;
+    rd = (T0 & 0xff) | ((T0 >> 8) & 0xff00)
+         | ((T1 << 16) & 0xff0000) | ((T1 << 8) & 0xff000000);
+    rm = ((T0 >> 8) & 0xff) | ((T0 >> 16) & 0xff00)
+         | ((T1 << 8) & 0xff0000) | (T1 & 0xff000000);
+    T0 = rd;
+    T1 = rm;
+}
+
+void HELPER(neon_zip_u8)(void)
+{
+    uint32_t rd;
+    uint32_t rm;
+    rd = (T0 & 0xff) | ((T1 << 8) & 0xff00)
+         | ((T0 << 16) & 0xff0000) | ((T1 << 24) & 0xff000000);
+    rm = ((T0 >> 16) & 0xff) | ((T1 >> 8) & 0xff00)
+         | ((T0 >> 8) & 0xff0000) | (T1 & 0xff000000);
+    T0 = rd;
+    T1 = rm;
+}
+
+void HELPER(neon_zip_u16)(void)
+{
+    uint32_t tmp;
+
+    tmp = (T0 & 0xffff) | (T1 << 16);
+    T1 = (T1 & 0xffff0000) | (T0 >> 16);
+    T0 = tmp;
 }

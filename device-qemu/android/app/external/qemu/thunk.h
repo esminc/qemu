@@ -14,7 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA  02110-1301 USA
  */
 #ifndef THUNK_H
 #define THUNK_H
@@ -37,7 +38,6 @@ typedef enum argtype {
     TYPE_PTR,
     TYPE_ARRAY,
     TYPE_STRUCT,
-    TYPE_OLDDEVT,
 } argtype;
 
 #define MK_PTR(type) TYPE_PTR, type
@@ -100,34 +100,9 @@ static inline int thunk_type_size(const argtype *type_ptr, int is_host)
     case TYPE_PTRVOID:
     case TYPE_PTR:
         if (is_host) {
-            return sizeof(void *);
+            return HOST_LONG_SIZE;
         } else {
             return TARGET_ABI_BITS / 8;
-        }
-        break;
-    case TYPE_OLDDEVT:
-        if (is_host) {
-#if defined(HOST_X86_64)
-            return 8;
-#elif defined(HOST_ALPHA) || defined(HOST_IA64) || defined(HOST_MIPS) || \
-      defined(HOST_PARISC) || defined(HOST_SPARC64)
-            return 4;
-#elif defined(HOST_PPC)
-            return sizeof(void *);
-#else
-            return 2;
-#endif
-        } else {
-#if defined(TARGET_X86_64)
-            return 8;
-#elif defined(TARGET_ALPHA) || defined(TARGET_IA64) || defined(TARGET_MIPS) || \
-      defined(TARGET_PARISC) || defined(TARGET_SPARC64)
-            return 4;
-#elif defined(TARGET_PPC)
-            return TARGET_ABI_BITS / 8;
-#else
-            return 2;
-#endif
         }
         break;
     case TYPE_ARRAY:
@@ -162,13 +137,11 @@ static inline int thunk_type_align(const argtype *type_ptr, int is_host)
     case TYPE_PTRVOID:
     case TYPE_PTR:
         if (is_host) {
-            return sizeof(void *);
+            return HOST_LONG_SIZE;
         } else {
             return TARGET_ABI_BITS / 8;
         }
         break;
-    case TYPE_OLDDEVT:
-        return thunk_type_size(type_ptr, is_host);
     case TYPE_ARRAY:
         return thunk_type_align_array(type_ptr + 2, is_host);
     case TYPE_STRUCT:

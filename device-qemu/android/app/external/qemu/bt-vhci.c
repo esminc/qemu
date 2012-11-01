@@ -14,11 +14,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "qemu-common.h"
 #include "qemu-char.h"
+#include "sysemu.h"
 #include "net.h"
 #include "hw/bt.h"
 
@@ -156,7 +158,7 @@ void bt_vhci_init(struct HCIInfo *info)
         exit(-1);
     }
 
-    s = g_malloc0(sizeof(struct bt_vhci_s));
+    s = qemu_mallocz(sizeof(struct bt_vhci_s));
     s->fd = fd;
     s->info = info ?: qemu_next_hci();
     s->info->opaque = s;

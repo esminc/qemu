@@ -15,7 +15,9 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA  02110-1301  USA
  */
 
 #include "qemu-common.h"
@@ -419,7 +421,7 @@ static void bt_submit_raw_acl(struct bt_piconet_s *net, int length, uint8_t *dat
  * be continuously allocated.  We do it though, to preserve similar
  * behaviour between hosts.  Some things, like the BD_ADDR cannot be
  * preserved though (for example if a real hci is used).  */
-#ifdef HOST_WORDS_BIGENDIAN
+#ifdef WORDS_BIGENDIAN
 # define HNDL(raw)	bswap16(raw)
 #else
 # define HNDL(raw)	(raw)
@@ -576,8 +578,8 @@ static void bt_hci_inquiry_result(struct bt_hci_s *hci,
 
 static void bt_hci_mod_timer_1280ms(QEMUTimer *timer, int period)
 {
-    qemu_mod_timer(timer, qemu_get_clock_ns(vm_clock) +
-                   muldiv64(period << 7, get_ticks_per_sec(), 100));
+    qemu_mod_timer(timer, qemu_get_clock(vm_clock) +
+                    muldiv64(period << 7, ticks_per_sec, 100));
 }
 
 static void bt_hci_inquiry_start(struct bt_hci_s *hci, int length)
@@ -657,7 +659,7 @@ static void bt_hci_lmp_link_establish(struct bt_hci_s *hci,
     if (master) {
         link->acl_mode = acl_active;
         hci->lm.handle[hci->lm.last_handle].acl_mode_timer =
-                qemu_new_timer_ns(vm_clock, bt_hci_mode_tick, link);
+                qemu_new_timer(vm_clock, bt_hci_mode_tick, link);
     }
 }
 
@@ -721,7 +723,7 @@ static void bt_hci_connection_reject_event(struct bt_hci_s *hci,
 static void bt_hci_connection_accept(struct bt_hci_s *hci,
                 struct bt_device_s *host)
 {
-    struct bt_hci_link_s *link = g_malloc0(sizeof(struct bt_hci_link_s));
+    struct bt_hci_link_s *link = qemu_mallocz(sizeof(struct bt_hci_link_s));
     evt_conn_complete params;
     uint16_t handle;
     uint8_t status = HCI_SUCCESS;
@@ -736,7 +738,7 @@ static void bt_hci_connection_accept(struct bt_hci_s *hci,
             tries);
 
     if (!tries) {
-        g_free(link);
+        qemu_free(link);
         bt_hci_connection_reject(hci, host, HCI_REJECTED_LIMITED_RESOURCES);
         status = HCI_NO_CONNECTION;
         goto complete;
@@ -893,7 +895,7 @@ static void bt_hci_disconnect(struct bt_hci_s *hci,
 
     /* We are the slave, we get to clean this burden */
     link = (struct bt_hci_link_s *) btlink;
-    g_free(link);
+    qemu_free(link);
 
 complete:
     bt_hci_lmp_link_teardown(hci, handle);
@@ -928,7 +930,7 @@ static void bt_hci_lmp_disconnect_slave(struct bt_link_s *btlink)
     uint16_t handle = link->handle;
     evt_disconn_complete params;
 
-    g_free(link);
+    qemu_free(link);
 
     bt_hci_lmp_link_teardown(hci, handle);
 
@@ -994,12 +996,13 @@ static int bt_hci_features_req(struct bt_hci_s *hci, uint16_t handle)
 
 static int bt_hci_version_req(struct bt_hci_s *hci, uint16_t handle)
 {
+    struct bt_device_s *slave;
     evt_read_remote_version_complete params;
 
     if (bt_hci_handle_bad(hci, handle))
         return -ENODEV;
 
-    bt_hci_remote_dev(hci, handle);
+    slave = bt_hci_remote_dev(hci, handle);
 
     bt_hci_event_status(hci, HCI_SUCCESS);
 
@@ -1084,8 +1087,8 @@ static int bt_hci_mode_change(struct bt_hci_s *hci, uint16_t handle,
 
     bt_hci_event_status(hci, HCI_SUCCESS);
 
-    qemu_mod_timer(link->acl_mode_timer, qemu_get_clock_ns(vm_clock) +
-                   muldiv64(interval * 625, get_ticks_per_sec(), 1000000));
+    qemu_mod_timer(link->acl_mode_timer, qemu_get_clock(vm_clock) +
+                            muldiv64(interval * 625, ticks_per_sec, 1000000));
     bt_hci_lmp_mode_change_master(hci, link->link, mode, interval);
 
     return 0;
@@ -1138,7 +1141,7 @@ static void bt_hci_reset(struct bt_hci_s *hci)
     hci->device.inquiry_scan = 0;
     hci->device.page_scan = 0;
     if (hci->device.lmp_name)
-        g_free((void *) hci->device.lmp_name);
+        qemu_free((void *) hci->device.lmp_name);
     hci->device.lmp_name = NULL;
     hci->device.class[0] = 0x00;
     hci->device.class[1] = 0x00;
@@ -1816,8 +1819,8 @@ static void bt_submit_hci(struct HCIInfo *info,
         LENGTH_CHECK(change_local_name);
 
         if (hci->device.lmp_name)
-            g_free((void *) hci->device.lmp_name);
-        hci->device.lmp_name = g_strndup(PARAM(change_local_name, name),
+            qemu_free((void *) hci->device.lmp_name);
+        hci->device.lmp_name = qemu_strndup(PARAM(change_local_name, name),
                         sizeof(PARAM(change_local_name, name)));
         bt_hci_event_complete_status(hci, HCI_SUCCESS);
         break;
@@ -2079,6 +2082,7 @@ static void bt_submit_sco(struct HCIInfo *info,
                 const uint8_t *data, int length)
 {
     struct bt_hci_s *hci = hci_from_info(info);
+    struct bt_link_s *link;
     uint16_t handle;
     int datalen;
 
@@ -2087,6 +2091,7 @@ static void bt_submit_sco(struct HCIInfo *info,
 
     handle = acl_handle((data[1] << 8) | data[0]);
     datalen = data[2];
+    data += 3;
     length -= 3;
 
     if (bt_hci_handle_bad(hci, handle)) {
@@ -2094,6 +2099,7 @@ static void bt_submit_sco(struct HCIInfo *info,
                         __FUNCTION__, handle);
         return;
     }
+    handle &= ~HCI_HANDLE_OFFSET;
 
     if (datalen > length) {
         fprintf(stderr, "%s: SCO packet too short (%iB < %iB)\n",
@@ -2101,6 +2107,7 @@ static void bt_submit_sco(struct HCIInfo *info,
         return;
     }
 
+    link = hci->lm.handle[handle].link;
     /* TODO */
 
     /* TODO: increase counter and send EVT_NUM_COMP_PKTS if synchronous
@@ -2143,12 +2150,12 @@ static void bt_hci_destroy(struct bt_device_s *dev)
 
 struct HCIInfo *bt_new_hci(struct bt_scatternet_s *net)
 {
-    struct bt_hci_s *s = g_malloc0(sizeof(struct bt_hci_s));
+    struct bt_hci_s *s = qemu_mallocz(sizeof(struct bt_hci_s));
 
-    s->lm.inquiry_done = qemu_new_timer_ns(vm_clock, bt_hci_inquiry_done, s);
-    s->lm.inquiry_next = qemu_new_timer_ns(vm_clock, bt_hci_inquiry_next, s);
+    s->lm.inquiry_done = qemu_new_timer(vm_clock, bt_hci_inquiry_done, s);
+    s->lm.inquiry_next = qemu_new_timer(vm_clock, bt_hci_inquiry_next, s);
     s->conn_accept_timer =
-            qemu_new_timer_ns(vm_clock, bt_hci_conn_accept_timeout, s);
+            qemu_new_timer(vm_clock, bt_hci_conn_accept_timeout, s);
 
     s->evt_packet = bt_hci_evt_packet;
     s->evt_submit = bt_hci_evt_submit;
@@ -2188,7 +2195,7 @@ static void bt_hci_done(struct HCIInfo *info)
     bt_device_done(&hci->device);
 
     if (hci->device.lmp_name)
-        g_free((void *) hci->device.lmp_name);
+        qemu_free((void *) hci->device.lmp_name);
 
     /* Be gentle and send DISCONNECT to all connected peers and those
      * currently waiting for us to accept or reject a connection request.
@@ -2217,5 +2224,5 @@ static void bt_hci_done(struct HCIInfo *info)
     qemu_free_timer(hci->lm.inquiry_next);
     qemu_free_timer(hci->conn_accept_timer);
 
-    g_free(hci);
+    qemu_free(hci);
 }

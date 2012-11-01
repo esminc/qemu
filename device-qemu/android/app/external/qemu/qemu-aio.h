@@ -17,27 +17,6 @@
 #include "qemu-common.h"
 #include "qemu-char.h"
 
-typedef struct BlockDriverAIOCB BlockDriverAIOCB;
-typedef void BlockDriverCompletionFunc(void *opaque, int ret);
-
-typedef struct AIOPool {
-    void (*cancel)(BlockDriverAIOCB *acb);
-    int aiocb_size;
-    BlockDriverAIOCB *free_aiocb;
-} AIOPool;
-
-struct BlockDriverAIOCB {
-    AIOPool *pool;
-    BlockDriverState *bs;
-    BlockDriverCompletionFunc *cb;
-    void *opaque;
-    BlockDriverAIOCB *next;
-};
-
-void *qemu_aio_get(AIOPool *pool, BlockDriverState *bs,
-                   BlockDriverCompletionFunc *cb, void *opaque);
-void qemu_aio_release(void *p);
-
 /* Returns 1 if there are still outstanding AIO requests; 0 otherwise */
 typedef int (AioFlushHandler)(void *opaque);
 
@@ -48,10 +27,8 @@ void qemu_aio_flush(void);
 /* Wait for a single AIO completion to occur.  This function will wait
  * until a single AIO event has completed and it will ensure something
  * has moved before returning. This can issue new pending aio as
- * result of executing I/O completion or bh callbacks.
- *
- * Return whether there is still any pending AIO operation.  */
-bool qemu_aio_wait(void);
+ * result of executing I/O completion or bh callbacks. */
+void qemu_aio_wait(void);
 
 /* Register a file descriptor and associated callbacks.  Behaves very similarly
  * to qemu_set_fd_handler2.  Unlike qemu_set_fd_handler2, these callbacks will

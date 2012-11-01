@@ -24,10 +24,11 @@
 #ifndef QEMU_AUDIO_H
 #define QEMU_AUDIO_H
 
-#include "config-host.h"
-#include "qemu-queue.h"
+#include "config.h"
+#include "qemu-common.h"
+#include "sys-queue.h"
 
-typedef void (*audio_callback_fn) (void *opaque, int avail);
+typedef void (*audio_callback_fn_t) (void *opaque, int avail);
 
 typedef enum {
     AUD_FMT_U8,
@@ -38,7 +39,7 @@ typedef enum {
     AUD_FMT_S32
 } audfmt_e;
 
-#ifdef HOST_WORDS_BIGENDIAN
+#ifdef WORDS_BIGENDIAN
 #define AUDIO_HOST_ENDIANNESS 1
 #else
 #define AUDIO_HOST_ENDIANNESS 0
@@ -70,7 +71,7 @@ struct capture_ops {
 typedef struct CaptureState {
     void *opaque;
     struct capture_ops ops;
-    QLIST_ENTRY (CaptureState) entries;
+    LIST_ENTRY (CaptureState) entries;
 } CaptureState;
 
 typedef struct SWVoiceOut SWVoiceOut;
@@ -79,15 +80,19 @@ typedef struct SWVoiceIn SWVoiceIn;
 
 typedef struct QEMUSoundCard {
     char *name;
-    QLIST_ENTRY (QEMUSoundCard) entries;
+    LIST_ENTRY (QEMUSoundCard) entries;
 } QEMUSoundCard;
 
 typedef struct QEMUAudioTimeStamp {
     uint64_t old_ts;
 } QEMUAudioTimeStamp;
 
-void AUD_vlog (const char *cap, const char *fmt, va_list ap) GCC_FMT_ATTR(2, 0);
-void AUD_log (const char *cap, const char *fmt, ...) GCC_FMT_ATTR(2, 3);
+void AUD_vlog (const char *cap, const char *fmt, va_list ap);
+void AUD_log (const char *cap, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__ ((__format__ (__printf__, 2, 3)))
+#endif
+    ;
 
 void AUD_help (void);
 void AUD_register_card (const char *name, QEMUSoundCard *card);
@@ -104,7 +109,7 @@ SWVoiceOut *AUD_open_out (
     SWVoiceOut *sw,
     const char *name,
     void *callback_opaque,
-    audio_callback_fn callback_fn,
+    audio_callback_fn_t callback_fn,
     struct audsettings *settings
     );
 
@@ -125,7 +130,7 @@ SWVoiceIn *AUD_open_in (
     SWVoiceIn *sw,
     const char *name,
     void *callback_opaque,
-    audio_callback_fn callback_fn,
+    audio_callback_fn_t callback_fn,
     struct audsettings *settings
     );
 
@@ -142,6 +147,9 @@ static inline void *advance (void *p, int incr)
     uint8_t *d = p;
     return (d + incr);
 }
+
+uint32_t popcount (uint32_t u);
+uint32_t lsbindex (uint32_t u);
 
 #ifdef __GNUC__
 #define audio_MIN(a, b) ( __extension__ ({      \
@@ -162,5 +170,14 @@ static inline void *advance (void *p, int incr)
 
 int wav_start_capture (CaptureState *s, const char *path, int freq,
                        int bits, int nchannels);
+
+extern int
+audio_get_backend_count( int  is_input );
+
+extern const char*
+audio_get_backend_name( int   is_input, int  index, const char*  *pinfo );
+
+extern int
+audio_check_backend_name( int  is_input, const char*  name );
 
 #endif  /* audio.h */

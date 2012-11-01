@@ -2,10 +2,6 @@
 #define CONSOLE_H
 
 #include "qemu-char.h"
-#include "qdict.h"
-#include "notify.h"
-#include "monitor.h"
-#include "trace.h"
 
 /* keyboard/mouse support */
 
@@ -13,17 +9,17 @@
 #define MOUSE_EVENT_RBUTTON 0x02
 #define MOUSE_EVENT_MBUTTON 0x04
 
-/* identical to the ps/2 keyboard bits */
-#define QEMU_SCROLL_LOCK_LED (1 << 0)
-#define QEMU_NUM_LOCK_LED    (1 << 1)
-#define QEMU_CAPS_LOCK_LED   (1 << 2)
-
 /* in ms */
+#if 1  /* ANDROID */
+#define GUI_REFRESH_INTERVAL (1000/60)  /* 60 frames/s is better */
+#else
 #define GUI_REFRESH_INTERVAL 30
+#endif
 
 typedef void QEMUPutKBDEvent(void *opaque, int keycode);
-typedef void QEMUPutLEDEvent(void *opaque, int ledstate);
+typedef void QEMUPutKBDEventN(void *opaque, int*  keycodes, int  count);
 typedef void QEMUPutMouseEvent(void *opaque, int dx, int dy, int dz, int buttons_state);
+typedef void QEMUPutGenericEvent(void*  opaque, int  type, int  code, int  value);
 
 typedef struct QEMUPutMouseEntry {
     QEMUPutMouseEvent *qemu_put_mouse_event;
@@ -31,40 +27,21 @@ typedef struct QEMUPutMouseEntry {
     int qemu_put_mouse_event_absolute;
     char *qemu_put_mouse_event_name;
 
-    int index;
-
     /* used internally by qemu for handling mice */
-    QTAILQ_ENTRY(QEMUPutMouseEntry) node;
+    struct QEMUPutMouseEntry *next;
 } QEMUPutMouseEntry;
 
-typedef struct QEMUPutLEDEntry {
-    QEMUPutLEDEvent *put_led;
-    void *opaque;
-    QTAILQ_ENTRY(QEMUPutLEDEntry) next;
-} QEMUPutLEDEntry;
-
 void qemu_add_kbd_event_handler(QEMUPutKBDEvent *func, void *opaque);
-void qemu_remove_kbd_event_handler(void);
 QEMUPutMouseEntry *qemu_add_mouse_event_handler(QEMUPutMouseEvent *func,
                                                 void *opaque, int absolute,
                                                 const char *name);
 void qemu_remove_mouse_event_handler(QEMUPutMouseEntry *entry);
-void qemu_activate_mouse_event_handler(QEMUPutMouseEntry *entry);
-
-QEMUPutLEDEntry *qemu_add_led_event_handler(QEMUPutLEDEvent *func, void *opaque);
-void qemu_remove_led_event_handler(QEMUPutLEDEntry *entry);
 
 void kbd_put_keycode(int keycode);
-void kbd_put_ledstate(int ledstate);
+void kbd_put_keycodes(int*  keycodes, int  count);
+void  kbd_generic_event(int  type, int code, int  value);
 void kbd_mouse_event(int dx, int dy, int dz, int buttons_state);
-
-/* Does the current mouse generate absolute events */
 int kbd_mouse_is_absolute(void);
-void qemu_add_mouse_mode_change_notifier(Notifier *notify);
-void qemu_remove_mouse_mode_change_notifier(Notifier *notify);
-
-/* Of all the mice, is there one that generates absolute events */
-int kbd_mouse_has_absolute(void);
 
 struct MouseTransformInfo {
     /* Touchscreen resolution */
@@ -74,7 +51,8 @@ struct MouseTransformInfo {
     int a[7];
 };
 
-void do_mouse_set(Monitor *mon, const QDict *qdict);
+void do_info_mice(Monitor *mon);
+void do_mouse_set(Monitor *mon, int index);
 
 /* keysym is a unicode code except for special keys (see QEMU_KEY_xxx
    constants) */
@@ -105,7 +83,6 @@ void kbd_put_keysym(int keysym);
 
 #define QEMU_BIG_ENDIAN_FLAG    0x01
 #define QEMU_ALLOCATED_FLAG     0x02
-#define QEMU_REALPIXELS_FLAG    0x04
 
 struct PixelFormat {
     uint8_t bits_per_pixel;
@@ -126,27 +103,6 @@ struct DisplaySurface {
 
     struct PixelFormat pf;
 };
-
-/* cursor data format is 32bit RGBA */
-typedef struct QEMUCursor {
-    int                 width, height;
-    int                 hot_x, hot_y;
-    int                 refcount;
-    uint32_t            data[];
-} QEMUCursor;
-
-QEMUCursor *cursor_alloc(int width, int height);
-void cursor_get(QEMUCursor *c);
-void cursor_put(QEMUCursor *c);
-QEMUCursor *cursor_builtin_hidden(void);
-QEMUCursor *cursor_builtin_left_ptr(void);
-void cursor_print_ascii_art(QEMUCursor *c, const char *prefix);
-int cursor_get_mono_bpl(QEMUCursor *c);
-void cursor_set_mono(QEMUCursor *c,
-                     uint32_t foreground, uint32_t background, uint8_t *image,
-                     int transparent, uint8_t *mask);
-void cursor_get_mono_image(QEMUCursor *c, int foreground, uint8_t *mask);
-void cursor_get_mono_mask(QEMUCursor *c, int transparent, uint8_t *mask);
 
 struct DisplayChangeListener {
     int idle;
@@ -180,7 +136,8 @@ struct DisplayState {
     struct DisplayChangeListener* listeners;
 
     void (*mouse_set)(int x, int y, int on);
-    void (*cursor_define)(QEMUCursor *cursor);
+    void (*cursor_define)(int width, int height, int bpp, int hot_x, int hot_y,
+                          uint8_t *image, uint8_t *mask);
 
     struct DisplayState *next;
 };
@@ -189,12 +146,14 @@ void register_displaystate(DisplayState *ds);
 DisplayState *get_displaystate(void);
 DisplaySurface* qemu_create_displaysurface_from(int width, int height, int bpp,
                                                 int linesize, uint8_t *data);
-void qemu_alloc_display(DisplaySurface *surface, int width, int height,
-                        int linesize, PixelFormat pf, int newflags);
 PixelFormat qemu_different_endianness_pixelformat(int bpp);
 PixelFormat qemu_default_pixelformat(int bpp);
 
+extern struct DisplayAllocator default_allocator;
 DisplayAllocator *register_displayallocator(DisplayState *ds, DisplayAllocator *da);
+DisplaySurface* defaultallocator_create_displaysurface(int width, int height);
+DisplaySurface* defaultallocator_resize_displaysurface(DisplaySurface *surface, int width, int height);
+void defaultallocator_free_displaysurface(DisplaySurface *surface);
 
 static inline DisplaySurface* qemu_create_displaysurface(DisplayState *ds, int width, int height)
 {
@@ -203,13 +162,11 @@ static inline DisplaySurface* qemu_create_displaysurface(DisplayState *ds, int w
 
 static inline DisplaySurface* qemu_resize_displaysurface(DisplayState *ds, int width, int height)
 {
-    trace_displaysurface_resize(ds, ds->surface, width, height);
     return ds->allocator->resize_displaysurface(ds->surface, width, height);
 }
 
 static inline void qemu_free_displaysurface(DisplayState *ds)
 {
-    trace_displaysurface_free(ds, ds->surface);
     ds->allocator->free_displaysurface(ds->surface);
 }
 
@@ -223,8 +180,7 @@ static inline int is_surface_bgr(DisplaySurface *surface)
 
 static inline int is_buffer_shared(DisplaySurface *surface)
 {
-    return (!(surface->flags & QEMU_ALLOCATED_FLAG) &&
-            !(surface->flags & QEMU_REALPIXELS_FLAG));
+    return (!(surface->flags & QEMU_ALLOCATED_FLAG));
 }
 
 static inline void register_displaychangelistener(DisplayState *ds, DisplayChangeListener *dcl)
@@ -328,22 +284,15 @@ static inline int ds_get_bytes_per_pixel(DisplayState *ds)
     return ds->surface->pf.bytes_per_pixel;
 }
 
-#ifdef CONFIG_CURSES
-#include <curses.h>
-typedef chtype console_ch_t;
-#else
 typedef unsigned long console_ch_t;
-#endif
 static inline void console_write_ch(console_ch_t *dest, uint32_t ch)
 {
-    if (!(ch & 0xff))
-        ch |= ' ';
-    *dest = ch;
+    cpu_to_le32wu((uint32_t *) dest, ch);
 }
 
 typedef void (*vga_hw_update_ptr)(void *);
 typedef void (*vga_hw_invalidate_ptr)(void *);
-typedef void (*vga_hw_screen_dump_ptr)(void *, const char *, bool cswitch);
+typedef void (*vga_hw_screen_dump_ptr)(void *, const char *);
 typedef void (*vga_hw_text_update_ptr)(void *, console_ch_t *);
 
 DisplayState *graphic_console_init(vga_hw_update_ptr update,
@@ -359,7 +308,7 @@ void vga_hw_text_update(console_ch_t *chardata);
 
 int is_graphic_console(void);
 int is_fixedsize_console(void);
-CharDriverState *text_console_init(QemuOpts *opts);
+CharDriverState *text_console_init(const char *p);
 void text_consoles_set_display(DisplayState *ds);
 void console_select(unsigned int index);
 void console_color_init(DisplayState *ds);
@@ -377,22 +326,9 @@ void cocoa_display_init(DisplayState *ds, int full_screen);
 void vnc_display_init(DisplayState *ds);
 void vnc_display_close(DisplayState *ds);
 int vnc_display_open(DisplayState *ds, const char *display);
-void vnc_display_add_client(DisplayState *ds, int csock, int skipauth);
-int vnc_display_disable_login(DisplayState *ds);
-char *vnc_display_local_addr(DisplayState *ds);
-#ifdef CONFIG_VNC
 int vnc_display_password(DisplayState *ds, const char *password);
-int vnc_display_pw_expire(DisplayState *ds, time_t expires);
-#else
-static inline int vnc_display_password(DisplayState *ds, const char *password)
-{
-    return -ENODEV;
-}
-static inline int vnc_display_pw_expire(DisplayState *ds, time_t expires)
-{
-    return -ENODEV;
-};
-#endif
+void do_info_vnc(Monitor *mon);
+char *vnc_display_local_addr(DisplayState *ds);
 
 /* curses.c */
 void curses_display_init(DisplayState *ds, int full_screen);

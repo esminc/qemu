@@ -1,14 +1,4 @@
-/*
- *  Software MMU support
- *
- * Generate inline load/store functions for all MMU modes (typically
- * at least _user and _kernel) as well as _data versions, for all data
- * sizes.
- *
- * Used by target op helpers.
- *
- * MMU mode suffixes are defined in target cpu.h.
- */
+/* Common softmmu definitions and inline routines.  */
 
 /* XXX: find something cleaner.
  * Furthermore, this is false for 64 bits targets
@@ -110,28 +100,9 @@
 #undef MEMSUFFIX
 #endif /* (NB_MMU_MODES >= 5) */
 
-#if (NB_MMU_MODES >= 6)
-
-#define ACCESS_TYPE 5
-#define MEMSUFFIX MMU_MODE5_SUFFIX
-#define DATA_SIZE 1
-#include "softmmu_header.h"
-
-#define DATA_SIZE 2
-#include "softmmu_header.h"
-
-#define DATA_SIZE 4
-#include "softmmu_header.h"
-
-#define DATA_SIZE 8
-#include "softmmu_header.h"
-#undef ACCESS_TYPE
-#undef MEMSUFFIX
-#endif /* (NB_MMU_MODES >= 6) */
-
-#if (NB_MMU_MODES > 6)
-#error "NB_MMU_MODES > 6 is not supported for now"
-#endif /* (NB_MMU_MODES > 6) */
+#if (NB_MMU_MODES > 5)
+#error "NB_MMU_MODES > 5 is not supported for now"
+#endif /* (NB_MMU_MODES > 5) */
 
 /* these access are slower, they must be as rare as possible */
 #define ACCESS_TYPE (NB_MMU_MODES)

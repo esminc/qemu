@@ -706,7 +706,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	req->length = USB_BUFSIZ;
 	gadget->ep0->driver_data = cdev;
 
-printk("composite_setup:bRequest=%d\n", ctrl->bRequest);
+//printk("composite_setup:bRequest=%d\n", ctrl->bRequest);
 	switch (ctrl->bRequest) {
 
 	/* we handle all standard USB descriptors */
@@ -750,7 +750,7 @@ printk("composite_setup:bRequest=%d\n", ctrl->bRequest);
 	case USB_REQ_SET_CONFIGURATION:
 		if (ctrl->bRequestType != 0)
 			goto unknown;
-printk("composite_setup:SET_CONFIGURATION bRequestType=%d\n", ctrl->bRequestType);
+//printk("composite_setup:SET_CONFIGURATION bRequestType=%d\n", ctrl->bRequestType);
 		if (gadget_is_otg(gadget)) {
 			if (gadget->a_hnp_support)
 				DBG(cdev, "HNP available\n");
@@ -761,7 +761,7 @@ printk("composite_setup:SET_CONFIGURATION bRequestType=%d\n", ctrl->bRequestType
 		}
 		spin_lock(&cdev->lock);
 		value = set_config(cdev, ctrl, w_value);
-printk("set_config:value=%d w_value=%d\n", value, w_value);
+//printk("set_config:value=%d w_value=%d\n", value, w_value);
 		spin_unlock(&cdev->lock);
 		break;
 	case USB_REQ_GET_CONFIGURATION:
@@ -778,16 +778,16 @@ printk("set_config:value=%d w_value=%d\n", value, w_value);
 	 * no get() method, we know only altsetting zero works.
 	 */
 	case USB_REQ_SET_INTERFACE:
-printk("USB_REQ_SET_INTERFACE:ctrl->bRequestType=0x%x\n", ctrl->bRequestType);
+//printk("USB_REQ_SET_INTERFACE:ctrl->bRequestType=0x%x\n", ctrl->bRequestType);
 		if (ctrl->bRequestType != USB_RECIP_INTERFACE)
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
 			break;
-printk("USB_REQ_SET_INTERFACE:wIndex=%d\n", w_index);
+//printk("USB_REQ_SET_INTERFACE:wIndex=%d\n", w_index);
 		f = cdev->config->interface[intf];
 		if (!f)
 			break;
-printk("USB_REQ_SET_INTERFACE:wValue=%d\n", w_value);
+//printk("USB_REQ_SET_INTERFACE:wValue=%d\n", w_value);
 		if (w_value && !f->set_alt)
 			break;
 		value = f->set_alt(f, w_index, w_value);

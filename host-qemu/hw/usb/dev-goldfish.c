@@ -178,7 +178,7 @@ static void usb_goldfish_copy_data(MSDState *s, USBPacket *p)
 {
     uint32_t len;
     len = p->iov.size - p->result;
-printf("usb_goldfish_copy_data:enter\n");
+DPRINTF("usb_goldfish_copy_data:enter\n");
     if (len > s->scsi_len)
         len = s->scsi_len;
     usb_packet_copy(p, scsi_req_get_buf(s->req) + s->scsi_off, len);
@@ -188,42 +188,42 @@ printf("usb_goldfish_copy_data:enter\n");
     if (s->scsi_len == 0 || s->data_len == 0) {
         scsi_req_continue(s->req);
     }
-printf("usb_goldfish_copy_data:exit\n");
+DPRINTF("usb_goldfish_copy_data:exit\n");
 }
 
 static void usb_goldfish_send_status(MSDState *s, USBPacket *p)
 {
     int len;
 
-    printf("Command status %d tag 0x%x, len %zd\n",
+    DPRINTF("Command status %d tag 0x%x, len %zd\n",
             s->csw.status, le32_to_cpu(s->csw.tag), p->iov.size);
 
     assert(s->csw.sig == cpu_to_le32(0x53425355));
     len = MIN(sizeof(s->csw), p->iov.size);
     usb_packet_copy(p, &s->csw, len);
     memset(&s->csw, 0, sizeof(s->csw));
-    printf("Command status:exit\n");
+    DPRINTF("Command status:exit\n");
 }
 
 static void usb_goldfish_packet_complete(MSDState *s)
 {
     USBPacket *p = s->packet;
 
-printf("usb_goldfish_packet_complete:enter\n");
+DPRINTF("usb_goldfish_packet_complete:enter\n");
     /* Set s->packet to NULL before calling usb_packet_complete
        because another request may be issued before
        usb_packet_complete returns.  */
     DPRINTF("Packet complete %p\n", p);
     s->packet = NULL;
     usb_packet_complete(&s->dev, p);
-printf("usb_goldfish_packet_complete:exit\n");
+DPRINTF("usb_goldfish_packet_complete:exit\n");
 }
 
 static void usb_goldfish_transfer_data(SCSIRequest *req, uint32_t len)
 {
     MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
     USBPacket *p = s->packet;
-printf("usb_goldfish_transfer_data:enter\n");
+DPRINTF("usb_goldfish_transfer_data:enter\n");
 
     assert((s->mode == USB_MSDM_DATAOUT) == (req->cmd.mode == SCSI_XFER_TO_DEV));
     s->scsi_len = len;
@@ -235,7 +235,7 @@ printf("usb_goldfish_transfer_data:enter\n");
             usb_goldfish_packet_complete(s);
         }
     }
-printf("usb_goldfish_transfer_data:exit\n");
+DPRINTF("usb_goldfish_transfer_data:exit\n");
 }
 
 static void usb_goldfish_command_complete(SCSIRequest *req, uint32_t status, size_t resid)
@@ -243,7 +243,7 @@ static void usb_goldfish_command_complete(SCSIRequest *req, uint32_t status, siz
     MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
     USBPacket *p = s->packet;
 
-    printf("Command complete %d tag 0x%x\n", status, req->tag);
+    DPRINTF("Command complete %d tag 0x%x\n", status, req->tag);
 
     s->csw.sig = cpu_to_le32(0x53425355);
     s->csw.tag = cpu_to_le32(req->tag);
@@ -275,27 +275,27 @@ static void usb_goldfish_command_complete(SCSIRequest *req, uint32_t status, siz
     }
     scsi_req_unref(req);
     s->req = NULL;
-    printf("Command complete:exit\n");
+    DPRINTF("Command complete:exit\n");
 }
 
 static void usb_goldfish_request_cancelled(SCSIRequest *req)
 {
     MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
 
-printf("usb_goldfish_request_cancelled:enter\n");
+DPRINTF("usb_goldfish_request_cancelled:enter\n");
     if (req == s->req) {
         scsi_req_unref(s->req);
         s->req = NULL;
         s->scsi_len = 0;
     }
-printf("usb_goldfish_request_cancelled:exit\n");
+DPRINTF("usb_goldfish_request_cancelled:exit\n");
 }
 
 static void usb_goldfish_handle_reset(USBDevice *dev)
 {
     MSDState *s = (MSDState *)dev;
 
-    printf("Reset\n");
+    DPRINTF("Reset\n");
     if (s->req) {
         scsi_req_cancel(s->req);
     }
@@ -307,7 +307,7 @@ static void usb_goldfish_handle_reset(USBDevice *dev)
     }
 
     s->mode = USB_MSDM_CBW;
-    printf("usb_goldfish_handle_reset:exit\n");
+    DPRINTF("usb_goldfish_handle_reset:exit\n");
 }
 
 #if 1
@@ -384,25 +384,25 @@ struct usb_packet_setup_DescriptorDeviceRes {
 };
 static void printDevDesc(struct usb_device_descriptor *dp)
 {
-	printf("*****printDevDesc*******\n");
-	printf("bLength=%d\n", dp->bLength);
-	printf("bDescriptorType=0x%x\n", dp->bDescriptorType);
-	printf("bcdUSB=0x%x\n", dp->bcdUSB);
-	printf("bDeviceClass=0x%x\n", dp->bDeviceClass);
-	printf("bDeviceSubClass=0x%x\n", dp->bDeviceSubClass);
-	printf("bDeviceProtocol=0x%x\n", dp->bDeviceProtocol);
-	printf("bMaxPacketSize0=0x%x\n", dp->bMaxPacketSize0);
-	printf("idVendor=0x%x\n", dp->idVendor);
-	printf("idProduct=0x%x\n", dp->idProduct);
-	printf("bcdDevice=0x%x\n", dp->bcdDevice);
-	printf("iManufacturer=0x%x\n", dp->iManufacturer);
-	printf("iProduct=0x%x\n", dp->iProduct);
-	printf("iSerialNumber=0x%x\n", dp->iSerialNumber);
-	printf("bNumConfigurations=0x%x\n", dp->bNumConfigurations);
+	DPRINTF("*****printDevDesc*******\n");
+	DPRINTF("bLength=%d\n", dp->bLength);
+	DPRINTF("bDescriptorType=0x%x\n", dp->bDescriptorType);
+	DPRINTF("bcdUSB=0x%x\n", dp->bcdUSB);
+	DPRINTF("bDeviceClass=0x%x\n", dp->bDeviceClass);
+	DPRINTF("bDeviceSubClass=0x%x\n", dp->bDeviceSubClass);
+	DPRINTF("bDeviceProtocol=0x%x\n", dp->bDeviceProtocol);
+	DPRINTF("bMaxPacketSize0=0x%x\n", dp->bMaxPacketSize0);
+	DPRINTF("idVendor=0x%x\n", dp->idVendor);
+	DPRINTF("idProduct=0x%x\n", dp->idProduct);
+	DPRINTF("bcdDevice=0x%x\n", dp->bcdDevice);
+	DPRINTF("iManufacturer=0x%x\n", dp->iManufacturer);
+	DPRINTF("iProduct=0x%x\n", dp->iProduct);
+	DPRINTF("iSerialNumber=0x%x\n", dp->iSerialNumber);
+	DPRINTF("bNumConfigurations=0x%x\n", dp->bNumConfigurations);
 }
 
 #define PDESC(str, dp, member) 				\
-	printf("%s: %s : 0x%x\n", str, #member, dp->member)
+	DPRINTF("%s: %s : 0x%x\n", str, #member, dp->member)
 
 static void printConfigDesc(struct usb_config_descriptor *dp)
 {
@@ -522,12 +522,12 @@ static int sendRecvPacket(const char *sendBufp, int sendLen,
 	int ret = 0;
 	int len = 0;
 	ret = qemu_send_full(client_fd, sendBufp, sendLen, 0);
-	printf("qemu_send_full():ret=%d\n", ret);
+	DPRINTF("qemu_send_full():ret=%d\n", ret);
 
 
 	if (ret == sendLen) {
 		ret = qemu_recv_full(client_fd, &len, 4, 0);
-		printf("sendRecvPacket:ret =%d len = %d errno=%d\n", ret, len, errno);
+		DPRINTF("sendRecvPacket:ret =%d len = %d errno=%d\n", ret, len, errno);
 		if (ret != 4) {
 			ret = -1;
 		} else {
@@ -560,9 +560,9 @@ static int sendRecvDataPacket(int pid, int endpoint,
 	packetp->endpoint = endpoint;
 	packetp->datalen = sendLen;
 	memcpy(packetp->data, sendBufp, sendLen);
-	printf("sendRecvDataPacket:pid=%d\n", packetp->pid_token);
-	printf("sendRecvDataPacket:endp=%d\n", packetp->endpoint);
-	printf("sendRecvDataPacket:datalen=%d\n", packetp->datalen);
+	DPRINTF("sendRecvDataPacket:pid=%d\n", packetp->pid_token);
+	DPRINTF("sendRecvDataPacket:endp=%d\n", packetp->endpoint);
+	DPRINTF("sendRecvDataPacket:datalen=%d\n", packetp->datalen);
 
 	ret = sendRecvPacket((const char*)packetp, (6 + sendLen),
 			recvBufp, recvLen);
@@ -578,7 +578,7 @@ static int sendRecvDataPacket(int pid, int endpoint,
 	defaults:
 		break;
 	}
-	printf("sendRecvDataPacket():ret=%d pid=0x%x\n", 
+	DPRINTF("sendRecvDataPacket():ret=%d pid=0x%x\n", 
 			ret, resp->pid_handshake);
 	return 0;
 }
@@ -591,7 +591,7 @@ static void sendRecvSetupPacket(int request,
 	struct usb_packet_handshake *resp;
 	int ret;
 
-	printf("sendRecvSetupPacket:request=0x%x\n", request);
+	DPRINTF("sendRecvSetupPacket:request=0x%x\n", request);
 	packet.pid_token = USB_PID_SETUP;
 	switch (request) {
 	case USB_REQ_SET_CONFIGURATION:
@@ -650,7 +650,7 @@ static void sendRecvSetupPacket(int request,
 	defaults:
 		break;
 	}
-	printf("qemu_recv_full():ret=%d pid=0x%x\n", 
+	DPRINTF("qemu_recv_full():ret=%d pid=0x%x\n", 
 			ret, resp->pid_handshake);
 }
 #endif
@@ -667,7 +667,7 @@ static int usb_goldfish_handle_control(USBDevice *dev, USBPacket *p,
     MSDState *s = (MSDState *)dev;
     int ret;
 
-printf("usb_goldfish_handle_control:enter:request=0x%x\n", request);
+DPRINTF("usb_goldfish_handle_control:enter:request=0x%x\n", request);
     
     switch (request & 0xFF) {
     case USB_REQ_SET_ADDRESS:
@@ -702,7 +702,7 @@ printf("usb_goldfish_handle_control:enter:request=0x%x\n", request);
         ret = USB_RET_STALL;
         break;
     }
-printf("usb_goldfish_handle_control:exit:ret=0x%x\n", ret);
+DPRINTF("usb_goldfish_handle_control:exit:ret=0x%x\n", ret);
     return ret;
 }
 
@@ -710,14 +710,14 @@ static void usb_goldfish_cancel_io(USBDevice *dev, USBPacket *p)
 {
     MSDState *s = DO_UPCAST(MSDState, dev, dev);
 
-printf("usb_goldfish_handle_cancel_io:enter:p=0x%x\n", p);
+DPRINTF("usb_goldfish_handle_cancel_io:enter:p=0x%x\n", p);
     assert(s->packet == p);
     s->packet = NULL;
 
     if (s->req) {
         scsi_req_cancel(s->req);
     }
-printf("usb_goldfish_cancel_io:exit\n");
+DPRINTF("usb_goldfish_cancel_io:exit\n");
 }
 
 static int handshake2ret(pid)
@@ -751,23 +751,23 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 	static char recvBuf[10240];
 	struct usb_packet_handshake res;
 
-	printf("usb_goldfish_handle_data:enter:pid=0x%x ep_nr=%d\n", p->pid, p->ep->nr);
+	DPRINTF("usb_goldfish_handle_data:enter:pid=0x%x ep_nr=%d\n", p->pid, p->ep->nr);
 
 	switch (p->pid) {
 	case USB_TOKEN_OUT:
 		data_len = iov_to_buf(p->iov.iov, p->iov.niov, p->result, sendBuf, 4096);
 		p->result += data_len; 
-		printf("usb_goldfish_handle_data:OUT:iov_size=%d data_len=%d\n", p->iov.size, data_len);
+		DPRINTF("usb_goldfish_handle_data:OUT:iov_size=%d data_len=%d\n", p->iov.size, data_len);
 #if 1
 {
 	struct usb_goldfish_cbw *cbw;
 	cbw = (struct usb_goldfish_cbw*)sendBuf;
-	printf("usb_goldfish_handle_data:sig=0x%x\n", cbw->sig);
-	printf("usb_goldfish_handle_data:tag=0x%x\n", cbw->tag);
-	printf("usb_goldfish_handle_data:datalen=0x%x\n", cbw->data_len);
-	printf("usb_goldfish_handle_data:flags=0x%x\n", cbw->flags);
-	printf("usb_goldfish_handle_data:lun=0x%x\n", cbw->lun);
-	printf("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
+	DPRINTF("usb_goldfish_handle_data:sig=0x%x\n", cbw->sig);
+	DPRINTF("usb_goldfish_handle_data:tag=0x%x\n", cbw->tag);
+	DPRINTF("usb_goldfish_handle_data:datalen=0x%x\n", cbw->data_len);
+	DPRINTF("usb_goldfish_handle_data:flags=0x%x\n", cbw->flags);
+	DPRINTF("usb_goldfish_handle_data:lun=0x%x\n", cbw->lun);
+	DPRINTF("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
 }
 #endif
 		ret = sendRecvDataPacket(USB_PID_OUT, devep, 
@@ -813,18 +813,18 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
         switch (s->mode) {
         case USB_MSDM_CBW:
             if (p->iov.size != 31) {
-                fprintf(stderr, "usb-msd: Bad CBW size");
+                fDPRINTF(stderr, "usb-msd: Bad CBW size");
                 goto fail;
             }
             usb_packet_copy(p, &cbw, 31);
             if (le32_to_cpu(cbw.sig) != 0x43425355) {
-                fprintf(stderr, "usb-msd: Bad signature %08x\n",
+                fDPRINTF(stderr, "usb-msd: Bad signature %08x\n",
                         le32_to_cpu(cbw.sig));
                 goto fail;
             }
             DPRINTF("Command on LUN %d\n", cbw.lun);
             if (cbw.lun != 0) {
-                fprintf(stderr, "usb-msd: Bad LUN %d\n", cbw.lun);
+                fDPRINTF(stderr, "usb-msd: Bad LUN %d\n", cbw.lun);
                 goto fail;
             }
             tag = le32_to_cpu(cbw.tag);
@@ -954,7 +954,7 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
         break;
     }
 #endif
-printf("usb_goldfish_handle_data:exit:ret=0x%x\n", ret);
+DPRINTF("usb_goldfish_handle_data:exit:ret=0x%x\n", ret);
 
     return ret;
 }
@@ -974,12 +974,12 @@ static void *usb_goldfish_load_request(QEMUFile *f, SCSIRequest *req)
 {
     MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
 
-printf("usb_goldfish_load_request:enter\n");
+DPRINTF("usb_goldfish_load_request:enter\n");
     /* nothing to load, just store req in our state struct */
     assert(s->req == NULL);
     scsi_req_ref(req);
     s->req = req;
-printf("usb_goldfish_load_request:exit\n");
+DPRINTF("usb_goldfish_load_request:exit\n");
     return NULL;
 }
 
@@ -998,7 +998,7 @@ static int usb_goldfish_initfn(USBDevice *dev)
 {
     MSDState *s = DO_UPCAST(MSDState, dev, dev);
     BlockDriverState *bs = s->conf.bs;
-printf("usb_goldfish_initfn()\n");
+DPRINTF("usb_goldfish_initfn()\n");
 
 #ifdef TODO
     if (!bs) {
@@ -1110,30 +1110,30 @@ static void vusb_client_read(void *opaque)
 {
 	int ret;
 	static char buf[255];
-	printf("vusb_client_read:enter\n");
+	DPRINTF("vusb_client_read:enter\n");
 	ret = qemu_recv(client_fd, buf, 255, 0);
 	if (ret <= 0) {
-		printf("vusb_client_read:ret = %d errno=%d\n", ret, errno);
+		DPRINTF("vusb_client_read:ret = %d errno=%d\n", ret, errno);
 		qemu_set_fd_handler(client_fd, NULL, NULL, NULL);
 		close(client_fd);
 		client_fd = -1;
 	}
-	printf("vusb_client_read:exit\n");
+	DPRINTF("vusb_client_read:exit\n");
 }
 static void vusb_attach(void *opaque)
 {
 	struct sockaddr_un addr;
 	socklen_t addrlen = sizeof(addr);
-	printf("vusb_attach:enter\n");
+	DPRINTF("vusb_attach:enter\n");
 	client_fd = qemu_accept(sock_fd,
 			(struct sockaddr *)&addr, &addrlen);
 	if (client_fd == -1) {
-		printf("error accept: %s", strerror(errno));
+		DPRINTF("error accept: %s", strerror(errno));
 		return;
 	}
 	qemu_set_fd_handler(client_fd, vusb_client_read, NULL, NULL);
 	usb_device_add("goldfish");
-	printf("vusb_attach:exit\n");
+	DPRINTF("vusb_attach:exit\n");
 	return;
 }
 
@@ -1148,12 +1148,12 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
     USBDevice *dev;
     const char *p1;
     char fmt[32];
-    printf("usb_goldfish_init:bus=0x%x\n", bus);
+    DPRINTF("usb_goldfish_init:bus=0x%x\n", bus);
 
 
     /* parse -usbdevice disk: syntax into drive opts */
 #ifdef TODO
-    snprintf(id, sizeof(id), "usb%d", nr++);
+    snDPRINTF(id, sizeof(id), "usb%d", nr++);
     opts = qemu_opts_create(qemu_find_opts("drive"), id, 0, NULL);
 
     p1 = strchr(filename, ':');
@@ -1165,17 +1165,17 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
             pstrcpy(fmt, len, p2);
             qemu_opt_set(opts, "format", fmt);
         } else if (*filename != ':') {
-            printf("unrecognized USB mass-storage option %s\n", filename);
+            DPRINTF("unrecognized USB mass-storage option %s\n", filename);
             return NULL;
         }
         filename = p1;
     }
     if (!*filename) {
-        printf("block device specification needed\n");
+        DPRINTF("block device specification needed\n");
         return NULL;
     }
     qemu_opt_set(opts, "file", filename);
-    printf("usb_goldfish_init:1\n");
+    DPRINTF("usb_goldfish_init:1\n");
     qemu_opt_set(opts, "if", "none");
 
     /* create host drive */
@@ -1185,19 +1185,19 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
         return NULL;
     }
 #endif
-    printf("usb_goldfish_init:2\n");
+    DPRINTF("usb_goldfish_init:2\n");
 
     /* create guest device */
     dev = usb_create(bus, "usb-goldfish");
     if (!dev) {
         return NULL;
     }
-    printf("usb_goldfish_init:3\n");
+    DPRINTF("usb_goldfish_init:3\n");
 #if 1
 {
 	int r;
 	r = usb_goldfish_init2(dev);
-	printf("usb_qdev_init():r=%d\n", r);
+	DPRINTF("usb_qdev_init():r=%d\n", r);
 }
 #endif
 #ifdef TODO
@@ -1206,13 +1206,13 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
         return NULL;
     }
 #endif
-    printf("usb_goldfish_init:4\n");
+    DPRINTF("usb_goldfish_init:4\n");
 #ifdef TODO
     if (qdev_init(&dev->qdev) < 0)
         return NULL;
 #endif
 
-    printf("usb_goldfish_init:5\n");
+    DPRINTF("usb_goldfish_init:5\n");
     return dev;
 }
 
@@ -1303,7 +1303,7 @@ void goldfish_usb_desc_attach(USBDevice *dev)
 {
 	struct usb_packet_setup_DescriptorDeviceRes *devp;
 	struct usb_packet_setup_DescriptorConfigRes *confp;
-	printf("goldfish_usb_desc_attach:enter\n");
+	DPRINTF("goldfish_usb_desc_attach:enter\n");
 #if 1
 	//DEVICE
 	sendRecvSetupPacket(USB_REQ_GET_DESCRIPTOR, 
@@ -1334,7 +1334,7 @@ void goldfish_usb_desc_attach(USBDevice *dev)
 #else
 	usb_desc_attach(dev);
 #endif
-	printf("goldfish_usb_desc_attach:exit\n");
+	DPRINTF("goldfish_usb_desc_attach:exit\n");
 }
 
 static void usb_goldfish_class_initfn(ObjectClass *klass, void *data)
@@ -1342,7 +1342,7 @@ static void usb_goldfish_class_initfn(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
 
-printf("usb_goldfish_class_initfn()\n");
+DPRINTF("usb_goldfish_class_initfn()\n");
 
     uc->init           = usb_goldfish_initfn;
     uc->product_desc   = "QEMU USB GOLDFISH";
@@ -1366,12 +1366,12 @@ static TypeInfo msd_info = {
 
 static void usb_goldfish_register_types(void)
 {
-    printf("usb_goldfish_register_types:enter\n");
+    DPRINTF("usb_goldfish_register_types:enter\n");
 #if 1
     (void)unlink(sock_vusb_path);
     sock_fd = unix_listen(sock_vusb_path, NULL, strlen(sock_vusb_path));
     if (sock_fd >= 0) {
-	printf("sock_fd=%d\n", sock_fd);
+	DPRINTF("sock_fd=%d\n", sock_fd);
 	socket_set_block(sock_fd);
     	qemu_set_fd_handler(sock_fd, vusb_attach, NULL, NULL);
     }

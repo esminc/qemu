@@ -36,6 +36,13 @@
 //#define DEBUG
 //#define DEBUG_DUMP_DATA
 
+#ifdef DEBUG
+#define DPRINTF(fmt, ...) \
+do { printf(fmt , ## __VA_ARGS__); } while (0)
+#else
+#define DPRINTF(fmt, ...) do {} while(0)
+#endif
+
 #define UHCI_CMD_FGR      (1 << 4)
 #define UHCI_CMD_EGSM     (1 << 3)
 #define UHCI_CMD_GRESET   (1 << 2)
@@ -368,7 +375,7 @@ static void uhci_reset(void *opaque)
         port = &s->ports[i];
         port->ctrl = 0x0080;
         if (port->port.dev && port->port.dev->attached) {
-printf("uhci_reset:port=0x%x\n", &port->port);
+DPRINTF("uhci_reset:port=0x%x\n", &port->port);
             usb_port_reset(&port->port);
         }
     }
@@ -460,7 +467,7 @@ static void uhci_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
     addr &= 0x1f;
     trace_usb_uhci_mmio_writew(addr, val);
 
-printf("uhci_ioport_writew:addr=0x%x val=0x%x\n", addr, val);
+DPRINTF("uhci_ioport_writew:addr=0x%x val=0x%x\n", addr, val);
     switch(addr) {
     case 0x00:
         if ((val & UHCI_CMD_RS) && !(s->cmd & UHCI_CMD_RS)) {
@@ -562,7 +569,7 @@ static uint32_t uhci_ioport_readw(void *opaque, uint32_t addr)
                 goto read_default;
             port = &s->ports[n];
             val = port->ctrl;
-//printf("uhci-read:port=0x%x n=%d val=0x%x\n", port, n, val);
+//DPRINTF("uhci-read:port=0x%x n=%d val=0x%x\n", port, n, val);
         }
         break;
     default:
@@ -580,7 +587,7 @@ static void uhci_ioport_writel(void *opaque, uint32_t addr, uint32_t val)
 {
     UHCIState *s = opaque;
 
-printf("uhci_ioport_writel:addr=0x%x val=0x%x\n", addr, val);
+DPRINTF("uhci_ioport_writel:addr=0x%x val=0x%x\n", addr, val);
     addr &= 0x1f;
     trace_usb_uhci_mmio_writel(addr, val);
 
@@ -638,7 +645,7 @@ static void uhci_attach(USBPort *port1)
     } else {
         port->ctrl &= ~UHCI_PORT_LSDA;
     }
-printf("uhci_attach:port(0x%x)->index=%d\ ctrl=0x%xn", port, port1->index, port->ctrl);
+DPRINTF("uhci_attach:port(0x%x)->index=%d\ ctrl=0x%xn", port, port1->index, port->ctrl);
 
     uhci_resume(s);
 }
@@ -660,7 +667,7 @@ static void uhci_detach(USBPort *port1)
         port->ctrl &= ~UHCI_PORT_EN;
         port->ctrl |= UHCI_PORT_ENC;
     }
-printf("uhci_dettach:port(0x%x)->index=%d\ ctrl=0x%xn", port, port1->index, port->ctrl);
+DPRINTF("uhci_dettach:port(0x%x)->index=%d\ ctrl=0x%xn", port, port1->index, port->ctrl);
 
     uhci_resume(s);
 }
@@ -840,17 +847,17 @@ static int uhci_handle_td(UHCIState *s, uint32_t addr, UHCI_TD *td,
     if (!(td->ctrl & TD_CTRL_ACTIVE))
         return TD_RESULT_NEXT_QH;
 
-printf("uhci_handle_td:ctrl=0x%x\n", td->ctrl);
+DPRINTF("uhci_handle_td:ctrl=0x%x\n", td->ctrl);
     async = uhci_async_find_td(s, addr, td);
-printf("uhci_handle_td:async=0x%x\n", async);
+DPRINTF("uhci_handle_td:async=0x%x\n", async);
     if (async) {
         /* Already submitted */
         async->queue->valid = 32;
 
-printf("uhci_handle_td:async->done=0x%x\n", async->done);
+DPRINTF("uhci_handle_td:async->done=0x%x\n", async->done);
         if (!async->done)
             return TD_RESULT_ASYNC_CONT;
-printf("uhci_handle_td:queuing=0x%x\n", queuing);
+DPRINTF("uhci_handle_td:queuing=0x%x\n", queuing);
         if (queuing) {
             /* we are busy filling the queue, we are not prepared
                to consume completed packages then, just leave them
@@ -873,7 +880,7 @@ printf("uhci_handle_td:queuing=0x%x\n", queuing);
 
     max_len = ((td->token >> 21) + 1) & 0x7ff;
     pid = td->token & 0xff;
-printf("uhci_handle_td:pid=0x%x\n", pid);
+DPRINTF("uhci_handle_td:pid=0x%x\n", pid);
 
     dev = uhci_find_device(s, (td->token >> 8) & 0x7f);
     ep = usb_ep_get(dev, pid, (td->token >> 15) & 0xf);
@@ -1181,7 +1188,7 @@ static void uhci_frame_timer(void *opaque)
         s->status  |= UHCI_STS_USBINT;
         uhci_update_irq(s);
     }
-//printf("uhci_frame_timer:s->cmd=0x%x pending_int_mask=0x%x\n", 
+//DPRINTF("uhci_frame_timer:s->cmd=0x%x pending_int_mask=0x%x\n", 
 //	s->cmd, s->pending_int_mask);
     s->pending_int_mask = 0;
 
@@ -1253,7 +1260,7 @@ static int usb_uhci_common_initfn(PCIDevice *dev)
 
     if (s->masterbus) {
 #if 1
-printf("usb_uhci_common_initfn:masterbus\n");
+DPRINTF("usb_uhci_common_initfn:masterbus\n");
 #endif
         USBPort *ports[NB_PORTS];
         for(i = 0; i < NB_PORTS; i++) {
@@ -1266,7 +1273,7 @@ printf("usb_uhci_common_initfn:masterbus\n");
         }
     } else {
 #if 1
-printf("usb_uhci_common_initfn:not masterbus:bus=0x%x\n", &s->bus);
+DPRINTF("usb_uhci_common_initfn:not masterbus:bus=0x%x\n", &s->bus);
 #endif
         usb_bus_new(&s->bus, &uhci_bus_ops, &s->dev.qdev);
         for (i = 0; i < NB_PORTS; i++) {

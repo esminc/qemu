@@ -4,6 +4,13 @@
 #include "hw/usb/desc.h"
 #include "trace.h"
 
+#ifdef DEBUG
+#define DPRINTF(fmt, ...) \
+do { printf("usb-msd: " fmt , ## __VA_ARGS__); } while (0)
+#else
+#define DPRINTF(fmt, ...) do {} while(0)
+#endif
+
 /* ------------------------------------------------------------------ */
 
 static uint8_t usb_lo(uint16_t val)
@@ -82,11 +89,11 @@ int usb_desc_config(const USBDescConfig *conf, uint8_t *dest, size_t len)
     USBDescriptor *d = (void *)dest;
     int i, rc;
 
-printf("usb_desc_config:conf=%p dest=%p len=%d\n", conf, dest, len);
+DPRINTF("usb_desc_config:conf=%p dest=%p len=%d\n", conf, dest, len);
     if (len < bLength) {
         return -1;
     }
-printf("usb_desc_config:1\n");
+DPRINTF("usb_desc_config:1\n");
 
     d->bLength                      = bLength;
     d->bDescriptorType              = USB_DT_CONFIG;
@@ -97,7 +104,7 @@ printf("usb_desc_config:1\n");
     d->u.config.bmAttributes        = conf->bmAttributes;
     d->u.config.bMaxPower           = conf->bMaxPower;
     wTotalLength += bLength;
-printf("usb_desc_config:2\n");
+DPRINTF("usb_desc_config:2\n");
 
     /* handle grouped interfaces if any */
     for (i = 0; i < conf->nif_groups; i++) {
@@ -109,22 +116,22 @@ printf("usb_desc_config:2\n");
         }
         wTotalLength += rc;
     }
-printf("usb_desc_config:3\n");
+DPRINTF("usb_desc_config:3\n");
 
     /* handle normal (ungrouped / no IAD) interfaces if any */
     for (i = 0; i < conf->nif; i++) {
-printf("usb_desc_config:i=%d\n", i);
+DPRINTF("usb_desc_config:i=%d\n", i);
         rc = usb_desc_iface(conf->ifs + i, dest + wTotalLength, len - wTotalLength);
         if (rc < 0) {
             return rc;
         }
         wTotalLength += rc;
     }
-printf("usb_desc_config:4\n");
+DPRINTF("usb_desc_config:4\n");
 
     d->u.config.wTotalLength_lo = usb_lo(wTotalLength);
     d->u.config.wTotalLength_hi = usb_hi(wTotalLength);
-printf("usb_desc_config:exit\n");
+DPRINTF("usb_desc_config:exit\n");
     return wTotalLength;
 }
 
@@ -517,32 +524,32 @@ int usb_desc_get_descriptor(USBDevice *dev, int value, uint8_t *dest, size_t len
 
     switch(type) {
     case USB_DT_DEVICE:
-printf("DEVICE\n");
+DPRINTF("DEVICE\n");
         ret = usb_desc_device(&desc->id, dev->device, buf, sizeof(buf));
         trace_usb_desc_device(dev->addr, len, ret);
         break;
     case USB_DT_CONFIG:
-printf("CONFIG\n");
+DPRINTF("CONFIG\n");
         if (index < dev->device->bNumConfigurations) {
             ret = usb_desc_config(dev->device->confs + index, buf, sizeof(buf));
         }
         trace_usb_desc_config(dev->addr, index, len, ret);
         break;
     case USB_DT_STRING:
-printf("STRING\n");
+DPRINTF("STRING\n");
         ret = usb_desc_string(dev, index, buf, sizeof(buf));
         trace_usb_desc_string(dev->addr, index, len, ret);
         break;
 
     case USB_DT_DEVICE_QUALIFIER:
-printf("DEVICE_QUALIFIER\n");
+DPRINTF("DEVICE_QUALIFIER\n");
         if (other_dev != NULL) {
             ret = usb_desc_device_qualifier(other_dev, buf, sizeof(buf));
         }
         trace_usb_desc_device_qualifier(dev->addr, len, ret);
         break;
     case USB_DT_OTHER_SPEED_CONFIG:
-printf("OTHER_SPEED_CONFIG\n");
+DPRINTF("OTHER_SPEED_CONFIG\n");
         if (other_dev != NULL && index < other_dev->bNumConfigurations) {
             ret = usb_desc_config(other_dev->confs + index, buf, sizeof(buf));
             buf[0x01] = USB_DT_OTHER_SPEED_CONFIG;
@@ -578,19 +585,19 @@ int usb_desc_handle_control(USBDevice *dev, USBPacket *p,
     assert(desc != NULL);
     switch(request) {
     case DeviceOutRequest | USB_REQ_SET_ADDRESS:
-printf("usb_desc_handle_control:USB_REQ_SET_ADDRESS\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_SET_ADDRESS\n");
         dev->addr = value;
         trace_usb_set_addr(dev->addr);
         ret = 0;
         break;
 
     case DeviceRequest | USB_REQ_GET_DESCRIPTOR:
-printf("usb_desc_handle_control:USB_REQ_GET_DESCRIPTOR:");
+DPRINTF("usb_desc_handle_control:USB_REQ_GET_DESCRIPTOR:");
         ret = usb_desc_get_descriptor(dev, value, data, length);
         break;
 
     case DeviceRequest | USB_REQ_GET_CONFIGURATION:
-printf("usb_desc_handle_control:USB_REQ_GET_CONFIGURATION\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_GET_CONFIGURATION\n");
         /*
          * 9.4.2: 0 should be returned if the device is unconfigured, otherwise
          * the non zero value of bConfigurationValue.
@@ -599,13 +606,13 @@ printf("usb_desc_handle_control:USB_REQ_GET_CONFIGURATION\n");
         ret = 1;
         break;
     case DeviceOutRequest | USB_REQ_SET_CONFIGURATION:
-printf("usb_desc_handle_control:USB_REQ_SET_CONFIGURATION\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_SET_CONFIGURATION\n");
         ret = usb_desc_set_config(dev, value);
         trace_usb_set_config(dev->addr, value, ret);
         break;
 
     case DeviceRequest | USB_REQ_GET_STATUS: {
-printf("usb_desc_handle_control:USB_REQ_GET_STATUS\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_GET_STATUS\n");
         const USBDescConfig *config = dev->config ?
             dev->config : &dev->device->confs[0];
 
@@ -627,7 +634,7 @@ printf("usb_desc_handle_control:USB_REQ_GET_STATUS\n");
         break;
     }
     case DeviceOutRequest | USB_REQ_CLEAR_FEATURE:
-printf("usb_desc_handle_control:USB_REQ_CLEAR_FEATURE\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_CLEAR_FEATURE\n");
         if (value == USB_DEVICE_REMOTE_WAKEUP) {
             dev->remote_wakeup = 0;
             ret = 0;
@@ -635,7 +642,7 @@ printf("usb_desc_handle_control:USB_REQ_CLEAR_FEATURE\n");
         trace_usb_clear_device_feature(dev->addr, value, ret);
         break;
     case DeviceOutRequest | USB_REQ_SET_FEATURE:
-printf("usb_desc_handle_control:USB_REQ_SET_FEATURE\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_SET_FEATURE\n");
         if (value == USB_DEVICE_REMOTE_WAKEUP) {
             dev->remote_wakeup = 1;
             ret = 0;
@@ -644,7 +651,7 @@ printf("usb_desc_handle_control:USB_REQ_SET_FEATURE\n");
         break;
 
     case InterfaceRequest | USB_REQ_GET_INTERFACE:
-printf("usb_desc_handle_control:USB_REQ_GET_INERFACE\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_GET_INERFACE\n");
         if (index < 0 || index >= dev->ninterfaces) {
             break;
         }
@@ -652,7 +659,7 @@ printf("usb_desc_handle_control:USB_REQ_GET_INERFACE\n");
         ret = 1;
         break;
     case InterfaceOutRequest | USB_REQ_SET_INTERFACE:
-printf("usb_desc_handle_control:USB_REQ_SET_INERFACE\n");
+DPRINTF("usb_desc_handle_control:USB_REQ_SET_INERFACE\n");
         ret = usb_desc_set_interface(dev, index, value);
         trace_usb_set_interface(dev->addr, index, value, ret);
         break;

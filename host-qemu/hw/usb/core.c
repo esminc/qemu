@@ -32,7 +32,7 @@ void usb_attach(USBPort *port)
 {
     USBDevice *dev = port->dev;
 
-printf("usb_attach:port=0x%x\n", port);
+//printf("usb_attach:port=0x%x\n", port);
     assert(dev != NULL);
     assert(dev->attached);
     assert(dev->state == USB_STATE_NOTATTACHED);

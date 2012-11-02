@@ -128,7 +128,7 @@ void usb_device_handle_attach(USBDevice *dev)
 {
     USBDeviceClass *klass = USB_DEVICE_GET_CLASS(dev);
     if (klass->handle_attach) {
-printf("usb_device_handle_attach:dev=0x%x\n", dev);
+//printf("usb_device_handle_attach:dev=0x%x\n", dev);
         klass->handle_attach(dev);
     }
 }
@@ -346,7 +346,7 @@ int usb_claim_port(USBDevice *dev)
 
     assert(dev->port == NULL);
 
-printf("usb_claim_port:port_path=0x%x\n", dev->port_path);
+//printf("usb_claim_port:port_path=0x%x\n", dev->port_path);
     if (dev->port_path) {
         QTAILQ_FOREACH(port, &bus->free, next) {
             if (strcmp(port->path, dev->port_path) == 0) {
@@ -380,8 +380,8 @@ printf("usb_claim_port:port_path=0x%x\n", dev->port_path);
 
     QTAILQ_INSERT_TAIL(&bus->used, port, next);
     bus->nused++;
-printf("usb_claim_port:bus->nfree=%d\n", bus->nfree);
-printf("usb_claim_port:bus->nused=%d\n", bus->nused);
+//printf("usb_claim_port:bus->nfree=%d\n", bus->nfree);
+//printf("usb_claim_port:bus->nused=%d\n", bus->nused);
     return 0;
 }
 
@@ -420,7 +420,7 @@ int usb_device_attach(USBDevice *dev)
     }
 
     dev->attached++;
-printf("usb_device_attach:attached=%d\n", dev->attached);
+//printf("usb_device_attach:attached=%d\n", dev->attached);
     usb_attach(port);
 
     return 0;
@@ -564,7 +564,7 @@ USBDevice *usbdevice_create(const char *cmdline)
     const char *params;
     int len;
 
-printf("usbdevice_create:cmdline=%s legacy_usb_factory=0x%x\n", cmdline, legacy_usb_factory);
+//printf("usbdevice_create:cmdline=%s legacy_usb_factory=0x%x\n", cmdline, legacy_usb_factory);
     params = strchr(cmdline,':');
     if (params) {
         params++;
@@ -591,7 +591,7 @@ printf("usbdevice_create:cmdline=%s legacy_usb_factory=0x%x\n", cmdline, legacy_
         return NULL;
     }
 
-printf("usbdevice_create:f->usbdevice_init=0x%x\n", f->usbdevice_init);
+//printf("usbdevice_create:f->usbdevice_init=0x%x\n", f->usbdevice_init);
     if (!f->usbdevice_init) {
         if (*params) {
             error_report("usbdevice %s accepts no params", driver);

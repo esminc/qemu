@@ -124,6 +124,13 @@ static const char shortname[] = DRIVER_NAME;
 #undef ERROR
 #undef WARNING
 #undef INFO
+#if 1
+#define DBG(d, fmt, args...) 
+#define VDBG(d, fmt, args...) 
+#define ERROR(d, fmt, args...) 
+#define WARNING(d, fmt, args...) 
+#define INFO(d, fmt, args...) 
+#else
 #define DBG(d, fmt, args...) \
 	dev_dbg(&(d)->cdev->gadget->dev , fmt , ## args)
 #define VDBG(d, fmt, args...) \
@@ -134,6 +141,7 @@ static const char shortname[] = DRIVER_NAME;
 	dev_warn(&(d)->cdev->gadget->dev , fmt , ## args)
 #define INFO(d, fmt, args...) \
 	dev_info(&(d)->cdev->gadget->dev , fmt , ## args)
+#endif
 
 
 /*-------------------------------------------------------------------------*/

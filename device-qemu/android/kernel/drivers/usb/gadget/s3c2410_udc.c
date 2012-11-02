@@ -52,6 +52,12 @@
 #include <mach/irqs.h>
 
 #include <mach/hardware.h>
+#ifdef DEBUG_PRINT
+#define ddprintk(fmt, ...) \
+do { printk(fmt , ## __VA_ARGS__); } while (0)
+#else
+#define ddprintk(fmt, ...) do {} while(0)
+#endif
 
 #ifdef TODO
 #include <plat/regs-udc.h>
@@ -453,9 +459,9 @@ static inline int goldfish_udc_write_packet(int fifo,
 
 	prefetch(buf);
 
-	printk("%s %d %d %d %d\n", __func__,
+	ddprintk("%s %d %d %d %d\n", __func__,
 		req->req.actual, req->req.length, len, req->req.actual + len);
-	printk("max=%d\n", max);
+	ddprintk("max=%d\n", max);
 
 	req->req.actual += len;
 
@@ -477,7 +483,7 @@ static int goldfish_udc_write_fifo(struct goldfish_ep *ep,
 	u32		idx;
 	int		fifo_reg;
 	u32		ep_csr;
-	printk("goldfish_udc_write_fifo:enter\n");
+	ddprintk("goldfish_udc_write_fifo:enter\n");
 
 	idx = ep->bEndpointAddress & 0x7F;
 	switch (idx) {
@@ -513,13 +519,13 @@ static int goldfish_udc_write_fifo(struct goldfish_ep *ep,
 #ifdef TODO
 	if (idx == 0)
 #endif
-		printk(
+		ddprintk(
 			"Written ep%d %d.%d of %d b [last %d,z %d]\n",
 			idx, count, req->req.actual, req->req.length,
 			is_last, req->req.zero);
 
 	if (is_last) {
-printk("is_last!=0\n");
+ddprintk("is_last!=0\n");
 		/* The order is important. It prevents sending 2 packets
 		 * at the same time */
 
@@ -554,7 +560,7 @@ printk("is_last!=0\n");
 			goldfish_udc_set_ep0_ipr(base_addr);
 #endif
 		} else {
-printk("is_last=0\n");
+ddprintk("is_last=0\n");
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 			ep_csr = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
@@ -634,7 +640,7 @@ static int goldfish_udc_read_fifo(struct goldfish_ep *ep,
 #endif
 
 	fifo_count = goldfish_udc_fifo_count_out(count_reg);
-	printk("%s fifo count : %d\n", __func__, fifo_count);
+	ddprintk("%s fifo count : %d\n", __func__, fifo_count);
 
 	if (fifo_count > ep->ep.maxpacket)
 		avail = ep->ep.maxpacket;
@@ -663,7 +669,7 @@ static int goldfish_udc_read_fifo(struct goldfish_ep *ep,
 
 	/* Only ep0 debug messages are interesting */
 	if (idx == 0)
-		printk("%s fifo count : %d [last %d]\n",
+		ddprintk("%s fifo count : %d [last %d]\n",
 			__func__, fifo_count,is_last);
 
 	if (is_last) {
@@ -709,13 +715,13 @@ static int goldfish_udc_read_fifo_crq(struct usb_ctrlrequest *crq)
 
 	bytes_read = goldfish_udc_fifo_count_out(GOLDFISH_UDC_EP0_FIFO_CNT_REG);
 
-	printk("%s: fifo_count=%d\n", __func__, bytes_read);
+	ddprintk("%s: fifo_count=%d\n", __func__, bytes_read);
 
 	if (bytes_read > sizeof(struct usb_ctrlrequest))
 		bytes_read = sizeof(struct usb_ctrlrequest);
 
 	readsb(GOLDFISH_UDC_EP0_FIFO_REG + base_addr, outbuf, bytes_read);
-	printk("%s: len=%d %02x:%02x {%x,%x,%x}\n", __func__,
+	ddprintk("%s: len=%d %02x:%02x {%x,%x,%x}\n", __func__,
 		bytes_read, crq->bRequest, crq->bRequestType,
 		crq->wValue, crq->wIndex, crq->wLength);
 
@@ -785,7 +791,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 {
 	int len, ret, tmp;
 
-	printk("goldfish_udc_handle_ep0_idle:enter\n");
+	ddprintk("goldfish_udc_handle_ep0_idle:enter\n");
 	/* start control request? */
 #ifdef TODO
 	if (!(ep0csr & GOLDFISH_UDC_EP0_CSR_OPKRDY))
@@ -796,7 +802,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 
 	len = goldfish_udc_read_fifo_crq(crq);
 	if (len != sizeof(*crq)) {
-		printk("setup begin: fifo READ ERROR"
+		ddprintk("setup begin: fifo READ ERROR"
 			" wanted %d bytes got %d. Stalling out...\n",
 			sizeof(*crq), len);
 #ifdef TODO
@@ -805,7 +811,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		return;
 	}
 
-	printk("bRequest = %d bRequestType %d wLength = %d\n",
+	ddprintk("bRequest = %d bRequestType %d wLength = %d\n",
 		crq->bRequest, crq->bRequestType, crq->wLength);
 	/* cope with automagic for some standard requests. */
 	dev->req_std = (crq->bRequestType & USB_TYPE_MASK)
@@ -815,7 +821,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 
 	switch (crq->bRequest) {
 	case USB_REQ_SET_CONFIGURATION:
-		printk("USB_REQ_SET_CONFIGURATION ... \n");
+		ddprintk("USB_REQ_SET_CONFIGURATION ... \n");
 
 		if (crq->bRequestType == USB_RECIP_DEVICE) {
 			dev->req_config = 1;
@@ -824,7 +830,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		break;
 
 	case USB_REQ_SET_INTERFACE:
-		printk("USB_REQ_SET_INTERFACE ... \n");
+		ddprintk("USB_REQ_SET_INTERFACE ... \n");
 
 		if (crq->bRequestType == USB_RECIP_INTERFACE) {
 			dev->req_config = 1;
@@ -833,7 +839,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		break;
 
 	case USB_REQ_SET_ADDRESS:
-		printk("USB_REQ_SET_ADDRESS ... \n");
+		ddprintk("USB_REQ_SET_ADDRESS ... \n");
 
 		if (crq->bRequestType == USB_RECIP_DEVICE) {
 			tmp = crq->wValue & 0x7F;
@@ -846,7 +852,7 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		break;
 
 	case USB_REQ_GET_STATUS:
-		printk("USB_REQ_GET_STATUS ... \n");
+		ddprintk("USB_REQ_GET_STATUS ... \n");
 		goldfish_udc_clear_ep0_opr(base_addr);
 
 		if (dev->req_std) {
@@ -892,24 +898,24 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		dev->ep0state = EP0_OUT_DATA_PHASE;
 	
 	if (dev->driver) {
-		printk("dev=0x%x\n", dev);
-		printk("driver=0x%x\n", dev->driver);
-		//printk("setup=%p\n", dev->driver->setup);
+		ddprintk("dev=0x%x\n", dev);
+		ddprintk("driver=0x%x\n", dev->driver);
+		ddprintk("setup=%p\n", dev->driver->setup);
 	}
-	printk("gadget=%p\n", dev->gadget);
+	ddprintk("gadget=%p\n", dev->gadget);
 	ret = dev->driver->setup(&dev->gadget, crq);
 #ifdef TODO
 	if (ret < 0) {
 		if (dev->req_config) {
-			printk("config change %02x fail %d?\n",
+			ddprintk("config change %02x fail %d?\n",
 				crq->bRequest, ret);
 			return;
 		}
 
 		if (ret == -EOPNOTSUPP)
-			printk("Operation not supported\n");
+			ddprintk("Operation not supported\n");
 		else
-			printk(
+			ddprintk(
 				"dev->driver->setup failed. (%d)\n", ret);
 
 		udelay(5);
@@ -918,11 +924,11 @@ static void goldfish_udc_handle_ep0_idle(struct goldfish_udc *dev,
 		dev->ep0state = EP0_IDLE;
 		/* deferred i/o == no response yet */
 	} else if (dev->req_pending) {
-		printk("dev->req_pending... what now?\n");
+		ddprintk("dev->req_pending... what now?\n");
 		dev->req_pending=0;
 	}
 #endif
-	printk("ep0state %s ret=%d\n", ep0states[dev->ep0state], ret);
+	ddprintk("ep0state %s ret=%d\n", ep0states[dev->ep0state], ret);
 }
 
 static void goldfish_udc_handle_ep0(struct goldfish_udc *dev)
@@ -945,7 +951,7 @@ static void goldfish_udc_handle_ep0(struct goldfish_udc *dev)
 	ep0csr = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
 #endif
 
-	printk("ep0csr %x ep0state %s\n",
+	ddprintk("ep0csr %x ep0state %s\n",
 		ep0csr, ep0states[dev->ep0state]);
 
 	/* clear stall status */
@@ -969,7 +975,7 @@ static void goldfish_udc_handle_ep0(struct goldfish_udc *dev)
 
 	switch (dev->ep0state) {
 	case EP0_IDLE:
-		printk("EP0_IDLE\n");
+		ddprintk("EP0_IDLE\n");
 		goldfish_udc_handle_ep0_idle(dev, ep, &crq, ep0csr);
 		break;
 
@@ -1022,16 +1028,16 @@ static void goldfish_udc_handle_ep(struct goldfish_ep *ep)
 
 	idx = ep->bEndpointAddress & 0x7F;
 
-	printk("goldfish_udc_handle_ep:idx=%d is_in=%d\n", idx, is_in);
+	ddprintk("goldfish_udc_handle_ep:idx=%d is_in=%d\n", idx, is_in);
 	if (is_in) {
 #ifdef TODO
 		udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 		ep_csr1 = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
-		printk("ep%01d write csr:%02x %d\n",
+		ddprintk("ep%01d write csr:%02x %d\n",
 			idx, ep_csr1, req ? 1 : 0);
 
 		if (ep_csr1 & GOLDFISH_UDC_ICSR1_SENTSTL) {
-			printk("st\n");
+			ddprintk("st\n");
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 			udc_write(ep_csr1 & ~GOLDFISH_UDC_ICSR1_SENTSTL,
 					GOLDFISH_UDC_IN_CSR1_REG);
@@ -1050,7 +1056,7 @@ static void goldfish_udc_handle_ep(struct goldfish_ep *ep)
 #ifdef TODO
 		udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 		ep_csr1 = udc_read(GOLDFISH_UDC_OUT_CSR1_REG);
-		printk("ep%01d rd csr:%02x\n", idx, ep_csr1);
+		ddprintk("ep%01d rd csr:%02x\n", idx, ep_csr1);
 
 		if (ep_csr1 & GOLDFISH_UDC_OCSR1_SENTSTL) {
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
@@ -1089,7 +1095,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 	u32 idx;
 	unsigned long flags;
 
-	printk("goldfish_udc_irq:dev=0x%x\n", dev);
+	ddprintk("goldfish_udc_irq:dev=0x%x\n", dev);
 	spin_lock_irqsave(&dev->lock, flags);
 	/* Driver connected ? */
 	if (!dev->driver) {
@@ -1117,7 +1123,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 				GOLDFISH_UDC_USB_INT_REG);
 		goldfish_udc_pullup(&dev->gadget, 1);
 	}
-	printk("enter:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
+	ddprintk("enter:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
 #ifdef TODO
 	pwr_reg = udc_read(GOLDFISH_UDC_PWR_REG);
 
@@ -1197,7 +1203,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 	 * generate an interrupt
 	 */
 	if (usbd_status & GOLDFISH_UDC_INT_EP0) {
-		printk("USB ep0 irq\n");
+		ddprintk("USB ep0 irq\n");
 		/* Clear the interrupt bit by setting it to 1 */
 		udc_write(GOLDFISH_UDC_INT_EP0, GOLDFISH_UDC_EP_INT_REG);
 		goldfish_udc_handle_ep0(dev);
@@ -1207,7 +1213,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 	for (i = 1; i < GOLDFISH_ENDPOINTS; i++) {
 		u32 tmp = 1 << i;
 		if (usbd_status & tmp) {
-			printk("USB ep%d irq\n", i);
+			ddprintk("USB ep%d irq\n", i);
 
 			/* Clear the interrupt bit by setting it to 1 */
 			udc_write(tmp, GOLDFISH_UDC_EP_INT_REG);
@@ -1216,12 +1222,12 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 	}
 
 #ifdef TODO
-	printk("irq: %d goldfish_udc_done.\n", IRQ_USBD);
+	ddprintk("irq: %d goldfish_udc_done.\n", IRQ_USBD);
 	/* Restore old index */
 	udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 #endif
 	usbd_status = udc_read(GOLDFISH_UDC_EP_INT_REG);
-	printk("exit:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
+	ddprintk("exit:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
 
 	spin_unlock_irqrestore(&dev->lock, flags);
 
@@ -1316,7 +1322,7 @@ static int goldfish_udc_ep_enable(struct usb_ep *_ep,
 
 	/* print some debug message */
 	tmp = desc->bEndpointAddress;
-	printk ("enable %s(%d) ep%x%s-blk max %02x\n",
+	ddprintk ("enable %s(%d) ep%x%s-blk max %02x\n",
 		 _ep->name,ep->num, tmp,
 		 desc->bEndpointAddress & USB_DIR_IN ? "in" : "out", max);
 
@@ -1371,7 +1377,7 @@ goldfish_udc_alloc_request(struct usb_ep *_ep, gfp_t mem_flags)
 {
 	struct goldfish_request *req;
 
-	printk("%s(%p,%d)\n", __func__, _ep, mem_flags);
+	ddprintk("%s(%p,%d)\n", __func__, _ep, mem_flags);
 
 	if (!_ep)
 		return NULL;
@@ -1418,7 +1424,7 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 	u32			fifo_reg;
 
 	if (unlikely (!_ep || (!ep->desc && ep->ep.name != ep0name))) {
-		printk("%s: invalid args\n", __func__);
+		ddprintk("%s: invalid args\n", __func__);
 		return -EINVAL;
 	}
 
@@ -1433,9 +1439,9 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 	if (unlikely(!_req || !_req->complete
 			|| !_req->buf || !list_empty(&req->queue))) {
 		if (!_req)
-			printk("%s: 1 X X X\n", __func__);
+			ddprintk("%s: 1 X X X\n", __func__);
 		else {
-			printk("%s: 0 %01d %01d %01d\n",
+			ddprintk("%s: 0 %01d %01d %01d\n",
 				__func__, !_req->complete,!_req->buf,
 				!list_empty(&req->queue));
 		}
@@ -1468,7 +1474,7 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 	_req->status = -EINPROGRESS;
 	_req->actual = 0;
 
-	printk("%s: ep%x len %d\n",
+	ddprintk("%s: ep%x len %d\n",
 		 __func__, ep->bEndpointAddress, _req->length);
 
 	if (ep->bEndpointAddress) {
@@ -1487,7 +1493,7 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 	}
 
 	/* kickstart this i/o queue? */
-	printk("%s list_empty(ep->queue)=%d endp=0x%x ep_csr=0x%x fifo_count=%d\n", 
+	ddprintk("%s list_empty(ep->queue)=%d endp=0x%x ep_csr=0x%x fifo_count=%d\n", 
 		__func__, list_empty(&ep->queue),
 		ep->bEndpointAddress, ep_csr, fifo_count);
 	if (list_empty(&ep->queue) && !ep->halted) {
@@ -1534,13 +1540,13 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 				&& ((ep_csr&GOLDFISH_UDC_OCSR1_PKTRDY))
 #endif
 				&& goldfish_udc_write_fifo(ep, req)) {
-			printk("%s write ok\n", __func__);
+			ddprintk("%s write ok\n", __func__);
 			req = NULL;
 		} else if ((ep_csr & GOLDFISH_UDC_OCSR1_PKTRDY)
 				&& fifo_count
 				&& goldfish_udc_read_fifo(ep, req)) {
 			req = NULL;
-			printk("%s read ok\n", __func__);
+			ddprintk("%s read ok\n", __func__);
 		}
 	}
 
@@ -1550,7 +1556,7 @@ static int goldfish_udc_queue(struct usb_ep *_ep, struct usb_request *_req,
 
 	local_irq_restore(flags);
 
-	printk("%s ok\n", __func__);
+	ddprintk("%s ok\n", __func__);
 	return 0;
 }
 
@@ -1565,7 +1571,7 @@ static int goldfish_udc_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	unsigned long		flags;
 	struct goldfish_request	*req = NULL;
 
-	printk("%s(%p,%p)\n", __func__, _ep, _req);
+	ddprintk("%s(%p,%p)\n", __func__, _ep, _req);
 
 	if (!the_controller->driver)
 		return -ESHUTDOWN;
@@ -1587,7 +1593,7 @@ static int goldfish_udc_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	}
 
 	if (retval == 0) {
-		printk(
+		ddprintk(
 			"dequeued req %p from %s, len %d buf %p\n",
 			req, _ep->name, _req->length, _req->buf);
 
@@ -1609,7 +1615,7 @@ static int goldfish_udc_set_halt(struct usb_ep *_ep, int value)
 	u32			idx;
 
 	if (unlikely (!_ep || (!ep->desc && ep->ep.name != ep0name))) {
-		printk("%s: inval 2\n", __func__);
+		ddprintk("%s: inval 2\n", __func__);
 		return -EINVAL;
 	}
 
@@ -1679,7 +1685,7 @@ static int goldfish_udc_get_frame(struct usb_gadget *_gadget)
 {
 	int tmp;
 
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 #ifdef TODO
 	tmp = udc_read(GOLDFISH_UDC_FRAME_NUM2_REG) << 8;
@@ -1693,7 +1699,7 @@ static int goldfish_udc_get_frame(struct usb_gadget *_gadget)
  */
 static int goldfish_udc_wakeup(struct usb_gadget *_gadget)
 {
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 	return 0;
 }
 
@@ -1704,7 +1710,7 @@ static int goldfish_udc_set_selfpowered(struct usb_gadget *gadget, int value)
 {
 	struct goldfish_udc *udc = to_goldfish_udc(gadget);
 
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 	if (value)
 		udc->devstatus |= (1 << USB_DEVICE_SELF_POWERED);
@@ -1719,7 +1725,7 @@ static void goldfish_udc_enable(struct goldfish_udc *dev);
 
 static int goldfish_udc_set_pullup(struct goldfish_udc *udc, int is_on)
 {
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 #ifdef TODO
 	if (udc_info && udc_info->udc_command) {
@@ -1756,7 +1762,7 @@ static int goldfish_udc_vbus_session(struct usb_gadget *gadget, int is_active)
 {
 	struct goldfish_udc *udc = to_goldfish_udc(gadget);
 
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 	udc->vbus = (is_active != 0);
 	goldfish_udc_set_pullup(udc, is_active);
@@ -1767,7 +1773,7 @@ static int goldfish_udc_pullup(struct usb_gadget *gadget, int is_on)
 {
 	struct goldfish_udc *udc = to_goldfish_udc(gadget);
 
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 	goldfish_udc_set_pullup(udc, is_on ? 0 : 1);
 	return 0;
@@ -1817,7 +1823,7 @@ static const struct usb_gadget_ops goldfish_ops = {
  */
 static void goldfish_udc_disable(struct goldfish_udc *dev)
 {
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 
 	/* Disable all interrupts */
 #ifdef TODO
@@ -1873,7 +1879,7 @@ static void goldfish_udc_enable(struct goldfish_udc *dev)
 {
 	int i;
 
-	printk("goldfish_udc_enable called\n");
+	ddprintk("goldfish_udc_enable called\n");
 
 	/* dev->gadget.speed = USB_SPEED_UNKNOWN; */
 	dev->gadget.speed = USB_SPEED_FULL;
@@ -1910,7 +1916,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 	struct goldfish_udc *udc = the_controller;
 	int		retval;
 
-	printk("usb_gadget_register_driver() '%s'\n",
+	ddprintk("usb_gadget_register_driver() '%s'\n",
 		driver->driver.name);
 
 	/* Sanity checks */
@@ -1936,8 +1942,8 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 	/* Hook the driver */
 	udc->driver = driver;
 	udc->gadget.dev.driver = &driver->driver;
-	printk("udc dev=0x%x\n", udc);
-	printk("udc driver=0x%x\n", udc->driver);
+	ddprintk("udc dev=0x%x\n", udc);
+	ddprintk("udc driver=0x%x\n", udc->driver);
 
 	/* Bind the driver */
 	if ((retval = device_add(&udc->gadget.dev)) != 0) {
@@ -1945,7 +1951,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 		goto register_error;
 	}
 
-	printk("binding gadget driver '%s'\n",
+	ddprintk("binding gadget driver '%s'\n",
 		driver->driver.name);
 
 	if ((retval = driver->bind (&udc->gadget)) != 0) {
@@ -2090,7 +2096,7 @@ static int goldfish_udc_probe(struct platform_device *pdev)
 	int retval;
 	int irq;
 
-	printk("%s()\n", __func__);
+	ddprintk("%s()\n", __func__);
 	spin_lock_init (&udc->lock);
 
 	udc_info = kzalloc(sizeof(*udc_info), GFP_KERNEL);
@@ -2132,7 +2138,7 @@ static int goldfish_udc_probe(struct platform_device *pdev)
 	goldfish_udc_reinit(udc);
 
 	/* irq setup after old hardware state is cleaned up */
-	printk("%s() request_irq:irq=%d %d\n", __func__, 
+	ddprintk("%s() request_irq:irq=%d %d\n", __func__, 
 				udc_info->irq, goldfish_udc_irq);
 #if 1
 	retval = request_irq(udc_info->irq, goldfish_udc_irq, 
@@ -2186,7 +2192,7 @@ static int goldfish_udc_probe(struct platform_device *pdev)
 		if (!udc->regs_info)
 			dev_warn(dev, "debugfs file creation failed\n");
 	}
-	printk("goldfish_usbgadget:probe ok\n");
+	ddprintk("goldfish_usbgadget:probe ok\n");
 
 	return 0;
 
@@ -2265,7 +2271,7 @@ static int __init udc_init(void)
 	}
 
 	retval = platform_driver_register(&udc_driver_goldfish);
-	printk("udc_init: platform_dirver_register:retval=%d\n", retval);
+	ddprintk("udc_init: platform_dirver_register:retval=%d\n", retval);
 	if (retval)
 		goto err;
 

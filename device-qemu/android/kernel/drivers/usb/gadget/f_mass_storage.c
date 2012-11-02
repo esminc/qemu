@@ -1233,14 +1233,14 @@ static int do_verify(struct fsg_dev *fsg)
 static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 {
 	u8	*buf = (u8 *) bh->buf;
-printk("do_inquiry:fsg->curlun=%p bad_lun_okay=%d\n",fsg->curlun, fsg->bad_lun_okay);
+//printk("do_inquiry:fsg->curlun=%p bad_lun_okay=%d\n",fsg->curlun, fsg->bad_lun_okay);
 	if (!fsg->curlun) {		/* Unsupported LUNs are okay */
 		fsg->bad_lun_okay = 1;
 		memset(buf, 0, 36);
 		buf[0] = 0x7f;		/* Unsupported, no device-type */
 		return 36;
 	}
-printk("do_inquiry:1\n");
+//printk("do_inquiry:1\n");
 
 	memset(buf, 0, 8);	/* Non-removable, direct-access device */
 
@@ -1647,7 +1647,7 @@ static int send_status(struct fsg_dev *fsg)
 	else
 		sd = SS_LOGICAL_UNIT_NOT_SUPPORTED;
 
-printk("sd=0x%x\n", sd);
+//printk("sd=0x%x\n", sd);
 	if (fsg->phase_error) {
 		DBG(fsg, "sending phase-error status\n");
 		status = USB_STATUS_PHASE_ERROR;
@@ -1747,10 +1747,10 @@ static int check_command(struct fsg_dev *fsg, int cmnd_size,
 				fsg->lun, lun);
 
 	/* Check the LUN */
-printk("check_command0:fsg->lun=%d nluns=%d\n", fsg->lun, fsg->nluns);
+//printk("check_command0:fsg->lun=%d nluns=%d\n", fsg->lun, fsg->nluns);
 	if (fsg->lun >= 0 && fsg->lun < fsg->nluns) {
 		fsg->curlun = curlun = &fsg->luns[fsg->lun];
-printk("check_command1:fsg->curlun=%p\n", fsg->curlun);
+//printk("check_command1:fsg->curlun=%p\n", fsg->curlun);
 		if (fsg->cmnd[0] != SC_REQUEST_SENSE) {
 			curlun->sense_data = SS_NO_SENSE;
 			curlun->sense_data_info = 0;
@@ -1758,7 +1758,7 @@ printk("check_command1:fsg->curlun=%p\n", fsg->curlun);
 		}
 	} else {
 		fsg->curlun = curlun = NULL;
-printk("check_command2:fsg->curlun=%p\n", fsg->curlun);
+//printk("check_command2:fsg->curlun=%p\n", fsg->curlun);
 		fsg->bad_lun_okay = 0;
 
 		/* INQUIRY and REQUEST SENSE commands are explicitly allowed
@@ -1827,7 +1827,7 @@ static int do_scsi_command(struct fsg_dev *fsg)
 	switch (fsg->cmnd[0]) {
 
 	case SC_INQUIRY:
-printk("do_scsi_command:SC_INQUIRY\n");
+//printk("do_scsi_command:SC_INQUIRY\n");
 		fsg->data_size_from_cmnd = fsg->cmnd[4];
 		if ((reply = check_command(fsg, 6, DATA_DIR_TO_HOST,
 				(1<<4), 0,
@@ -1836,7 +1836,7 @@ printk("do_scsi_command:SC_INQUIRY\n");
 		break;
 
 	case SC_MODE_SELECT_6:
-printk("do_scsi_command:SC_MODE_SELECT_6\n");
+//printk("do_scsi_command:SC_MODE_SELECT_6\n");
 		fsg->data_size_from_cmnd = fsg->cmnd[4];
 		if ((reply = check_command(fsg, 6, DATA_DIR_FROM_HOST,
 				(1<<1) | (1<<4), 0,
@@ -1845,7 +1845,7 @@ printk("do_scsi_command:SC_MODE_SELECT_6\n");
 		break;
 
 	case SC_MODE_SELECT_10:
-printk("do_scsi_command:SC_MODE_SELECT_10\n");
+//printk("do_scsi_command:SC_MODE_SELECT_10\n");
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_FROM_HOST,
 				(1<<1) | (3<<7), 0,
@@ -1854,7 +1854,7 @@ printk("do_scsi_command:SC_MODE_SELECT_10\n");
 		break;
 
 	case SC_MODE_SENSE_6:
-printk("do_scsi_command:SC_MODE_SENSE_6\n");
+//printk("do_scsi_command:SC_MODE_SENSE_6\n");
 		fsg->data_size_from_cmnd = fsg->cmnd[4];
 		if ((reply = check_command(fsg, 6, DATA_DIR_TO_HOST,
 				(1<<1) | (1<<2) | (1<<4), 0,
@@ -1863,7 +1863,7 @@ printk("do_scsi_command:SC_MODE_SENSE_6\n");
 		break;
 
 	case SC_MODE_SENSE_10:
-printk("do_scsi_command:SC_MODE_SENSE_10\n");
+//printk("do_scsi_command:SC_MODE_SENSE_10\n");
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(1<<1) | (1<<2) | (3<<7), 0,
@@ -1872,7 +1872,7 @@ printk("do_scsi_command:SC_MODE_SENSE_10\n");
 		break;
 
 	case SC_PREVENT_ALLOW_MEDIUM_REMOVAL:
-printk("do_scsi_command:SC_PREVENT_ALLOW_MEDIUM_REMOVAL\n");
+//printk("do_scsi_command:SC_PREVENT_ALLOW_MEDIUM_REMOVAL\n");
 		fsg->data_size_from_cmnd = 0;
 		if ((reply = check_command(fsg, 6, DATA_DIR_NONE,
 				(1<<4), 0,
@@ -1881,7 +1881,7 @@ printk("do_scsi_command:SC_PREVENT_ALLOW_MEDIUM_REMOVAL\n");
 		break;
 
 	case SC_READ_6:
-printk("do_scsi_command:SC_READ_6\n");
+//printk("do_scsi_command:SC_READ_6\n");
 		i = fsg->cmnd[4];
 		fsg->data_size_from_cmnd = (i == 0 ? 256 : i) << 9;
 		if ((reply = check_command(fsg, 6, DATA_DIR_TO_HOST,
@@ -1891,7 +1891,7 @@ printk("do_scsi_command:SC_READ_6\n");
 		break;
 
 	case SC_READ_10:
-printk("do_scsi_command:SC_READ_10\n");
+//printk("do_scsi_command:SC_READ_10\n");
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]) << 9;
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(1<<1) | (0xf<<2) | (3<<7), 1,
@@ -1900,7 +1900,7 @@ printk("do_scsi_command:SC_READ_10\n");
 		break;
 
 	case SC_READ_12:
-printk("do_scsi_command:SC_READ_12\n");
+//printk("do_scsi_command:SC_READ_12\n");
 		fsg->data_size_from_cmnd = get_be32(&fsg->cmnd[6]) << 9;
 		if ((reply = check_command(fsg, 12, DATA_DIR_TO_HOST,
 				(1<<1) | (0xf<<2) | (0xf<<6), 1,
@@ -1909,7 +1909,7 @@ printk("do_scsi_command:SC_READ_12\n");
 		break;
 
 	case SC_READ_CAPACITY:
-printk("do_scsi_command:SC_READ_CAPACITY\n");
+//printk("do_scsi_command:SC_READ_CAPACITY\n");
 		fsg->data_size_from_cmnd = 8;
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(0xf<<2) | (1<<8), 1,
@@ -1918,7 +1918,7 @@ printk("do_scsi_command:SC_READ_CAPACITY\n");
 		break;
 
 	case SC_READ_FORMAT_CAPACITIES:
-printk("do_scsi_command:SC_READ_FORMAT_CAPACITIES\n");
+//printk("do_scsi_command:SC_READ_FORMAT_CAPACITIES\n");
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(3<<7), 1,
@@ -1927,7 +1927,7 @@ printk("do_scsi_command:SC_READ_FORMAT_CAPACITIES\n");
 		break;
 
 	case SC_REQUEST_SENSE:
-printk("do_scsi_command:SC_REQUEST_SENSE\n");
+//printk("do_scsi_command:SC_REQUEST_SENSE\n");
 		fsg->data_size_from_cmnd = fsg->cmnd[4];
 		if ((reply = check_command(fsg, 6, DATA_DIR_TO_HOST,
 				(1<<4), 0,
@@ -1936,7 +1936,7 @@ printk("do_scsi_command:SC_REQUEST_SENSE\n");
 		break;
 
 	case SC_START_STOP_UNIT:
-printk("do_scsi_command:SC_START_STOP_UNIT\n");
+//printk("do_scsi_command:SC_START_STOP_UNIT\n");
 		fsg->data_size_from_cmnd = 0;
 		if ((reply = check_command(fsg, 6, DATA_DIR_NONE,
 				(1<<1) | (1<<4), 0,
@@ -1945,7 +1945,7 @@ printk("do_scsi_command:SC_START_STOP_UNIT\n");
 		break;
 
 	case SC_SYNCHRONIZE_CACHE:
-printk("do_scsi_command:SC_SYNCHRONIZE_CACHE\n");
+//printk("do_scsi_command:SC_SYNCHRONIZE_CACHE\n");
 		fsg->data_size_from_cmnd = 0;
 		if ((reply = check_command(fsg, 10, DATA_DIR_NONE,
 				(0xf<<2) | (3<<7), 1,
@@ -1954,7 +1954,7 @@ printk("do_scsi_command:SC_SYNCHRONIZE_CACHE\n");
 		break;
 
 	case SC_TEST_UNIT_READY:
-printk("do_scsi_command:SC_TEST_UNIT_READY\n");
+//printk("do_scsi_command:SC_TEST_UNIT_READY\n");
 		fsg->data_size_from_cmnd = 0;
 		reply = check_command(fsg, 6, DATA_DIR_NONE,
 				0, 1,
@@ -1964,7 +1964,7 @@ printk("do_scsi_command:SC_TEST_UNIT_READY\n");
 	/* Although optional, this command is used by MS-Windows.  We
 	 * support a minimal version: BytChk must be 0. */
 	case SC_VERIFY:
-printk("do_scsi_command:SC_VERIFY\n");
+//printk("do_scsi_command:SC_VERIFY\n");
 		fsg->data_size_from_cmnd = 0;
 		if ((reply = check_command(fsg, 10, DATA_DIR_NONE,
 				(1<<1) | (0xf<<2) | (3<<7), 1,
@@ -1973,7 +1973,7 @@ printk("do_scsi_command:SC_VERIFY\n");
 		break;
 
 	case SC_WRITE_6:
-printk("do_scsi_command:SC_WRITE_6\n");
+//printk("do_scsi_command:SC_WRITE_6\n");
 		i = fsg->cmnd[4];
 		fsg->data_size_from_cmnd = (i == 0 ? 256 : i) << 9;
 		if ((reply = check_command(fsg, 6, DATA_DIR_FROM_HOST,
@@ -1983,7 +1983,7 @@ printk("do_scsi_command:SC_WRITE_6\n");
 		break;
 
 	case SC_WRITE_10:
-printk("do_scsi_command:SC_WRITE_10\n");
+//printk("do_scsi_command:SC_WRITE_10\n");
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]) << 9;
 		if ((reply = check_command(fsg, 10, DATA_DIR_FROM_HOST,
 				(1<<1) | (0xf<<2) | (3<<7), 1,
@@ -1992,7 +1992,7 @@ printk("do_scsi_command:SC_WRITE_10\n");
 		break;
 
 	case SC_WRITE_12:
-printk("do_scsi_command:SC_WRITE_12\n");
+//printk("do_scsi_command:SC_WRITE_12\n");
 		fsg->data_size_from_cmnd = get_be32(&fsg->cmnd[6]) << 9;
 		if ((reply = check_command(fsg, 12, DATA_DIR_FROM_HOST,
 				(1<<1) | (0xf<<2) | (0xf<<6), 1,
@@ -2022,7 +2022,7 @@ printk("do_scsi_command:SC_WRITE_12\n");
 	}
 	up_read(&fsg->filesem);
 
-	printk("reply: %d, fsg->data_size_from_cmnd: %d\n",
+	VDBG(fsg, "reply: %d, fsg->data_size_from_cmnd: %d\n",
 			reply, fsg->data_size_from_cmnd);
 	if (reply == -EINTR || signal_pending(current))
 		return -EINTR;
@@ -2789,14 +2789,14 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 			INFO(fsg, "failed to register LUN%d: %d\n", i, rc);
 			goto out;
 		}
-printk("UMS:device_register\n");
+//printk("UMS:device_register\n");
 		rc = device_create_file(&curlun->dev, &dev_attr_file);
 		if (rc != 0) {
 			ERROR(fsg, "device_create_file failed: %d\n", rc);
 			device_unregister(&curlun->dev);
 			goto out;
 		}
-printk("UMS:device_create_file\n");
+//printk("UMS:device_create_file\n");
 		curlun->registered = 1;
 		kref_get(&fsg->ref);
 	}

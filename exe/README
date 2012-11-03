@@ -1,0 +1,37 @@
+1. Executing Environment of Android Emulator
+
+OS: Linux(required)
+    #Ubuntu 11.04
+CPU:x86_64(required)
+    #Intel (R) Core (TM) 2 Duo CPU E7500@2.93GHz
+Mem:4GB
+
+2. Files
+(1) qemu-system-x86_64
+    QEMU for Host-PC connecting to Android emulator.
+
+(2) emulator
+    QEMU for Android-Emulator connecting to Host-PC(QEMU)
+
+(3) emulator_img
+    Android and Emulator images. 
+
+3. Work flow
+(1) download Host PC's iso file.
+    I think Knoppinx is a better choice.
+
+(2) android AVD setup using android sdk(Linux)
+    http://developer.android.com/sdk/index.html
+
+(3) boot Host PC(QEMU) using qemu-system-x86_64
+    Please setup kvm on linux in order for better response.
+
+    (example)
+      ./qemu-system-x86_64 -usb -enable-kvm -cdrom <iso image>
+
+(4) boot android emulator using emulator and images.
+    
+    ./emulator -avd <avd> -data emulator_img/userdata-qemu.img -ramdisk emulator_img/ramdisk.img -system emulator_img/system.img -kernel emulator_img/zImage -qemu -m 512
+
+4. operation image
+   http://www.youtube.com/watch?v=F984AJL6p2Q&feature=relmfu

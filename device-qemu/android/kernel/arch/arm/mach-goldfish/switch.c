@@ -208,7 +208,11 @@ static struct platform_driver goldfish_switch_driver = {
 
 static int __init goldfish_switch_init(void)
 {
+#if 1
+	goldfish_switch_class = class_create(THIS_MODULE, "goldfish-switch");
+#else
 	goldfish_switch_class = class_create(THIS_MODULE, "switch");
+#endif
 	if (IS_ERR(goldfish_switch_class))
 		return PTR_ERR(goldfish_switch_class);
 	return platform_driver_register(&goldfish_switch_driver);

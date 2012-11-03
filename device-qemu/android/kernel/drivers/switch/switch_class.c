@@ -104,7 +104,7 @@ EXPORT_SYMBOL_GPL(switch_set_state);
 static int create_switch_class(void)
 {
 	if (!switch_class) {
-#if 1
+#if 0
 		switch_class = class_create(THIS_MODULE, "dummy_switch");
 #else
 		switch_class = class_create(THIS_MODULE, "switch");

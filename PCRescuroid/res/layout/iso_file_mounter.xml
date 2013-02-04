@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="fill_parent"
+    android:layout_height="fill_parent"
+    android:orientation="vertical" >
+    
+    <TableLayout 
+        android:layout_width="fill_parent"
+    	android:layout_height="wrap_content"
+    	
+    	android:stretchColumns="1"
+    	android:shrinkColumns="1">
+    	<TableRow
+            android:id="@+id/service_name_row">
+            <TextView 
+                android:text="@string/service_name"
+                android:padding="3dip"
+                android:textSize="20dp"/>
+            <TextView 
+                android:id="@+id/service_name"
+                android:padding="3dip"/>
+        </TableRow>
+        <TableRow
+            android:id="@+id/file_name_row">
+            <TextView 
+                android:text="@string/file_name"
+                android:padding="3dip"
+                android:textSize="20dp"/>
+            <TextView 
+                android:id="@+id/file_name"
+                android:padding="3dip"/>
+        </TableRow>
+        <!-- <TableRow
+            android:id="@+id/file_size_row">
+            <TextView 
+                android:text="@string/file_size"/>
+            <TextView 
+                android:id="@+id/file_size"/>
+        </TableRow> -->        
+    </TableLayout>
+    <ToggleButton 
+        android:id="@+id/mount_switch"
+        android:textOn="@string/unmount"
+        android:textOff="@string/mount"
+        android:onClick="mount"
+        android:layout_width="fill_parent"
+		android:layout_height="wrap_content"
+           />
+    
+    <Button 
+        android:id="@+id/file_choose"
+        android:text="@string/file_choose"
+        android:onClick="fileChoose"
+        android:layout_width="fill_parent"
+   		android:layout_height="wrap_content"/>
+</LinearLayout>

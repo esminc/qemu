@@ -1,6 +1,3 @@
-/**
- * 
- */
 package jp.co.esm.etec.usbgadget;
 
 import java.io.File;
@@ -14,12 +11,13 @@ import android.util.Log;
 import android.view.View;
 
 /**
- * @author m-murakami
- *
+ * ISOファイルを提供するサービスを選択する画面です。
  */
 public class ServiceChooseActivity extends Activity {
 	
 	private static final int REQUEST_LOCAL = 0;
+	
+	public static final String EXTRA_SERVICE_NAME = "service_name";
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -47,7 +45,7 @@ public class ServiceChooseActivity extends Activity {
 	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
 		if (REQUEST_LOCAL == requestCode) {
 			if (data != null) {
-				data.putExtra("service_name", "SD");				
+				data.putExtra(EXTRA_SERVICE_NAME, "SD");				
 			}
 			setResult(resultCode, data);
 			finish();

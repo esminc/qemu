@@ -14,17 +14,28 @@
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name" 
         android:allowBackup="false">        
+
+        <activity 
+            android:name=".FormatChooseActivity"
+            android:icon="@drawable/ic_launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        
         <activity 
             android:name="jp.co.esm.etec.usbgadget.SDCardMounter"
+            android:icon="@drawable/ic_launcher">
+        </activity>
+        
+        <activity 
+            android:name="jp.co.esm.etec.usbgadget.ISOFileMounter"
             android:icon="@drawable/ic_launcher">
             <intent-filter>
             	<action android:name="android.intent.action.VIEW" />
             	<category android:name="android.intent.category.DEFAULT" />
             	<data android:scheme="file" android:mimeType="application/x-iso9660-image" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
         

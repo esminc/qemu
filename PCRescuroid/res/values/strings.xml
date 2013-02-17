@@ -12,4 +12,7 @@
     
     <string name="local_file_choose">SDカードのファイルを選択</string>
     <string name="dropbox_file_choose">DropBoxのファイルを選択</string>
+    
+    <string name="sd_choose">SDカード</string>
+    <string name="iso_choose">ISOイメージ</string>
 </resources>

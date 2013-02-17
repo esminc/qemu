@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="fill_parent"
+    android:layout_height="fill_parent"
+    android:orientation="vertical" >
+    
+    <ToggleButton 
+        android:id="@+id/mount_switch"
+        android:textOn="@string/unmount"
+        android:textOff="@string/mount"
+        android:onClick="mount"
+        android:layout_width="fill_parent"
+		android:layout_height="wrap_content"/>
+</LinearLayout>

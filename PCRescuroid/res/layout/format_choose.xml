@@ -5,16 +5,16 @@
     android:orientation="vertical" >
     
     <Button 
-        android:id="@+id/local_file_choose"
-        android:text="@string/local_file_choose"
-        android:onClick="chooseLocalFile"
+        android:id="@+id/sd_choose"
+        android:text="@string/sd_choose"
+        android:onClick="chooseSD"
         android:layout_width="fill_parent"
    		android:layout_height="wrap_content"/>
     
     <Button 
-        android:id="@+id/dropbox_file_choose"
-        android:text="@string/dropbox_file_choose"
-        android:onClick="chooseDropboxFile"
+        android:id="@+id/iso_choose"
+        android:text="@string/iso_choose"
+        android:onClick="chooseISO"
         android:layout_width="fill_parent"
    		android:layout_height="wrap_content"/>
 </LinearLayout>

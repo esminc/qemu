@@ -303,7 +303,7 @@ class MountService extends IMountService.Stub {
 
             if (getMassStorageConnected() && !suppressIfConnected) {
                 Intent intent = new Intent();
-                intent.setClassName(mContext, "jp.co.esm.etec.usbgadget.SDCardMounter");
+                intent.setClassName(mContext, "jp.co.esm.etec.usbgadget.FormatChooseActivity");
                 intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 PendingIntent pi = PendingIntent.getActivity(mContext, 0, intent, 0);
                 setUsbStorageNotification(
@@ -452,7 +452,7 @@ class MountService extends IMountService.Stub {
      */
     void notifyMediaShared(String path) {
         Intent intent = new Intent();
-        intent.setClassName(mContext, "jp.co.esm.etec.usbgadget.SDCardMounter");
+        intent.setClassName(mContext, "jp.co.esm.etec.usbgadget.FormatChooseActivity");
         PendingIntent pi = PendingIntent.getActivity(mContext, 0, intent, 0);
         setUsbStorageNotification(com.android.internal.R.string.usb_storage_stop_notification_title,
                                   com.android.internal.R.string.usb_storage_stop_notification_message,

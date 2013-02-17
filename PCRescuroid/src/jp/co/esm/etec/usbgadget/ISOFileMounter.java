@@ -5,22 +5,29 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ToggleButton;
 
 /**
- * SDカードのマウント、アンマウントを行うアクティビティです。
+ * ISOファイルのマウント、アンマウントを行うアクティビティです。
  */
-public class SDCardMounter extends Activity {
+public class ISOFileMounter extends Activity {
 	
-	private static final String TAG = "SDCardMounter";
+	private static final String TAG = "ISOFileMounter";
 	
 	private static final int DIALOG_MOUNT_ERORR_ID = 1;
 	
 	private static final int DIALOG_UNMOUNT_ERORR_ID = 2;
+	
+	private static final int REQUEST_FILE_CHOOSE = 1;
+	
+	private String isoFilePath;
 
 	/**
 	 * {@inheritDoc}
@@ -28,11 +35,39 @@ public class SDCardMounter extends Activity {
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
-		setContentView(R.layout.sd_card_mounter);
+		setContentView(R.layout.iso_file_mounter);
+	}
+	
+	/**
+	 * ファイルを
+	 * @param view
+	 */
+	public void fileChoose(View view) {
+		Intent intent = new Intent();
+		intent.setClass(getApplicationContext(), ServiceChooseActivity.class);
+		startActivityForResult(intent, REQUEST_FILE_CHOOSE);
+	}
+	
+	/* (non-Javadoc)
+	 * @see android.app.Activity#onActivityResult(int, int, android.content.Intent)
+	 */
+	@Override
+	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+		if (REQUEST_FILE_CHOOSE == requestCode) {
+			if (data != null) {
+				Uri fileUri = data.getData();
+				isoFilePath = fileUri.getPath();
+				String serviceName = data.getStringExtra(ServiceChooseActivity.EXTRA_SERVICE_NAME);
+				TextView fileNameView = (TextView)findViewById(R.id.file_name);
+				fileNameView.setText(isoFilePath);
+				TextView serviceNameView = (TextView)findViewById(R.id.service_name);
+				serviceNameView.setText(serviceName);
+			}
+		}
 	}
 
 	/**
-	 * {@link View}から呼び出されます。SDカードのマウント・アンマウントを行います。
+	 * {@link View}から呼び出されます。ISOファイルのマウント・アンマウントを行います。
 	 * 
 	 * @param v {@link ToggleButton}
 	 */
@@ -84,12 +119,16 @@ public class SDCardMounter extends Activity {
 	}
 	
 	private void mount() {
-		MountService mountService = getMountService();
-		mountService.setMassStorageEnabled(true);
+		if (isoFilePath != null) {
+			MountService mountService = getMountService();
+			mountService.mountMedia(isoFilePath);
+		}
 	}
 
 	private void unmount() {
-		MountService mountService = getMountService();
-		mountService.setMassStorageEnabled(false);
+		if (isoFilePath != null) {
+			MountService mountService = getMountService();
+			mountService.unmountMedia(isoFilePath);
+		}
 	}
 }

@@ -671,7 +671,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 	u32 idx;
 	unsigned long flags;
 
-	ddprintk("goldfish_udc_irq:dev=0x%x\n", dev);
+	//ddprintk("goldfish_udc_irq:dev=0x%x\n", dev);
 	spin_lock_irqsave(&dev->lock, flags);
 	/* Driver connected ? */
 	if (!dev->driver) {
@@ -697,7 +697,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 				GOLDFISH_UDC_USB_INT_REG);
 		goldfish_udc_pullup(&dev->gadget, 1);
 	}
-	ddprintk("enter:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
+	//ddprintk("enter:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
 	/* EP */
 	/* control traffic */
 	/* check on ep0csr != 0 is not a good idea as clearing in_pkt_ready
@@ -724,7 +724,7 @@ static irqreturn_t goldfish_udc_irq(int dummy, void *_dev)
 
 	usb_status = udc_read(GOLDFISH_UDC_USB_INT_REG);
 	usbd_status = udc_read(GOLDFISH_UDC_EP_INT_REG);
-	ddprintk("exit:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
+	//ddprintk("goldfish_udc_irq:exit:usb_status=0x%x usbd_status=0x%x\n", usb_status, usbd_status);
 
 	spin_unlock_irqrestore(&dev->lock, flags);
 

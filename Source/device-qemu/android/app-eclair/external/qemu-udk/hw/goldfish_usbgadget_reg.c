@@ -2,7 +2,6 @@
 #include "goldfish_usbgadget_reg.h"
 #include "goldfish_reg.h"
 
-
 /* register type definition */
 #define UDC_REGMASK_ACCESS	0x0F
 #define UDC_REGMASK_TYPE	0xF0

@@ -19,9 +19,7 @@
 #include "goldfish_usbgadget_prot.h"
 #define  GOLDFISH_TIMER_SAVE_VERSION  1
 
-#define ECLIPSE_HOST
-
-static void recvToken(struct usb_packet_token *tp);
+static int recvToken(struct usb_packet_token *tp);
 static void recvDATA(struct usb_packet_data *dp);
 static void sendDATA(struct usb_packet_data *dp);
 static void sendACK(int endpoint)
@@ -52,19 +50,23 @@ struct usbgadget_state usbgadget_state = {
         .irq_count = 1,
     }
 };
-static void recvToken(struct usb_packet_token *tp)
+static int recvToken(struct usb_packet_token *tp)
 {
 	int ret;
 	ret = recvUsbData((char*)tp, sizeof(*tp));
 	dbg("***** recvToken:ret=%d\n", ret);
+	return ret;
 }
 void hostEventHandler(void *opaque) 
 {
+	int ret;
 	struct usb_packet_token token;
 	dbg("hostEventHandler:enter\n");
-	recvToken(&token);
+	ret = recvToken(&token);
 	dbg("hostEventHandler:pid=%d\n", token.pid_token);
-	goldfish_device_set_irq(&usbgadget_state.dev, 0, 1);
+	if (ret > 0) {
+		goldfish_device_set_irq(&usbgadget_state.dev, 0, 1);
+	}
 	return;
 }
 
@@ -185,7 +187,7 @@ static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset)
 		offset = offset + ep_nr;
 	}
 	val = guestOSRead(offset);
-	dbg("goldfish_usbgadget_read:offset=0x%x val=0x%x\n", offset, val);
+	//dbg("goldfish_usbgadget_read:offset=0x%x val=0x%x\n", offset, val);
 	return val;
 }
 

@@ -28,9 +28,6 @@ static void sendACK(int endpoint)
 	int ret;
 	struct usb_packet_handshake token;
 	dbg("sendACK:ep_nr=%d\n", endpoint);
-	if (endpoint != 0) {
-		return;
-	}
 	token.pid_handshake = USB_PID_ACK;
 	token.endpoint = endpoint;
 	token.dir = DIR_SLAVE_TO_HOST;
@@ -231,13 +228,12 @@ static void goldfish_usbgadget_write(void *opaque, target_phys_addr_t offset, ui
 		int baseAddr;
 		int regVal;
 		int ep_nr;
+		int old;
 		ep_nr = REG(GOLDFISH_UDC_INDEX_REG);
 		baseAddr = offset + ep_nr;
-		REGSET(baseAddr, value);
-		if ((value & GOLDFISH_UDC_ICSR1_PKTRDY)) {
-			uint32_t fifoAddr = getFifoAddr(ep_nr);
-			value &= ~(GOLDFISH_UDC_ICSR1_PKTRDY|GOLDFISH_UDC_OCSR1_PKTRDY);
-			//ep_write_done(fifoAddr, ep_nr);
+		old = REG(baseAddr);
+		if ((old & GOLDFISH_UDC_OCSR1_PKTRDY) && (value & GOLDFISH_UDC_OCSR1_PKTRDY)) {
+			value &= ~(GOLDFISH_UDC_OCSR1_PKTRDY);
 			guestOSWrite(baseAddr, value);
 			sendACK(ep_nr);
 		} else {
@@ -248,10 +244,12 @@ static void goldfish_usbgadget_write(void *opaque, target_phys_addr_t offset, ui
 		int regVal;
 		int ret;
 		int ep_nr;
+		int old;
 		ep_nr = REG(GOLDFISH_UDC_INDEX_REG);
 		baseAddr = offset + REG(GOLDFISH_UDC_INDEX_REG);
-		if (!(value & GOLDFISH_UDC_OCSR1_PKTRDY)) {
-			//ep_read_done(ep_nr);
+		old = REG(baseAddr);
+		if ((old & GOLDFISH_UDC_OCSR1_PKTRDY) && (value & GOLDFISH_UDC_OCSR1_PKTRDY)) {
+			value &= ~(GOLDFISH_UDC_OCSR1_PKTRDY);
 			guestOSWrite(baseAddr, value);
 			sendACK(ep_nr);
 		} else {

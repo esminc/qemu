@@ -290,7 +290,7 @@ ddprintk("is_last!=0\n");
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 			ep_csr = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
-			udc_write(ep_csr | GOLDFISH_UDC_ICSR1_PKTRDY,
+			udc_write(ep_csr & ~GOLDFISH_UDC_OCSR1_PKTRDY,
 					GOLDFISH_UDC_IN_CSR1_REG);
 		}
 
@@ -305,7 +305,7 @@ ddprintk("is_last!=0\n");
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
 			ep_csr = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
 			udc_write(idx, GOLDFISH_UDC_INDEX_REG);
-			udc_write(ep_csr | GOLDFISH_UDC_ICSR1_PKTRDY,
+			udc_write(ep_csr & ~GOLDFISH_UDC_OCSR1_PKTRDY,
 					GOLDFISH_UDC_IN_CSR1_REG);
 		}
 	}

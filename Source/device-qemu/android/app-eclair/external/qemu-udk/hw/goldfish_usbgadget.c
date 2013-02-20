@@ -19,6 +19,7 @@
 #include "goldfish_usbgadget_prot.h"
 #define  GOLDFISH_TIMER_SAVE_VERSION  1
 
+#define dbg printf
 static int recvToken(struct usb_packet_token *tp);
 static void recvDATA(struct usb_packet_data *dp);
 static void sendDATA(struct usb_packet_data *dp);
@@ -27,13 +28,15 @@ static void sendACK(int endpoint)
 	int ret;
 	struct usb_packet_handshake token;
 	dbg("sendACK:ep_nr=%d\n", endpoint);
+	if (endpoint != 0) {
+		return;
+	}
 	token.pid_handshake = USB_PID_ACK;
 	token.endpoint = endpoint;
 	token.dir = DIR_SLAVE_TO_HOST;
 	ret = sendUsbData((char*)&token, sizeof(token));
 	dbg("***** sendACK:ret=%d\n", ret);
 }
-#define dbg printf
 
 static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset);
 
@@ -187,7 +190,7 @@ static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset)
 		offset = offset + ep_nr;
 	}
 	val = guestOSRead(offset);
-	//dbg("goldfish_usbgadget_read:offset=0x%x val=0x%x\n", offset, val);
+	dbg("goldfish_usbgadget_read:offset=0x%x val=0x%x\n", offset, val);
 	return val;
 }
 

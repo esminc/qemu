@@ -462,18 +462,42 @@ static int goldfish_udc_get_status(struct goldfish_udc *dev,
 {
 	u16 status = 0;
 	u8 ep_num = crq->wIndex & 0x7F;
+	//u8 is_in = crq->wIndex & USB_DIR_IN;
+	u8 is_in;
+	struct goldfish_ep *ep = &dev->ep[ep_num];
 
+	is_in = ep->bEndpointAddress & USB_DIR_IN;
+
+
+	ddprintk("goldfish_udc_get_status:enter\n");
 	switch (crq->bRequestType & USB_RECIP_MASK) {
 	case USB_RECIP_INTERFACE:
+		ddprintk("goldfish_udc_get_status:INTERFACE:nop\n");
 		break;
 
 	case USB_RECIP_DEVICE:
 		status = dev->devstatus;
+		ddprintk("goldfish_udc_get_status:DEVICE:status=0x%x\n", status);
 		break;
 
 	case USB_RECIP_ENDPOINT:
+		ddprintk("goldfish_udc_get_status:ENDP:is_in=0x%x ep=%d wLength=%d\n", is_in, ep_num, crq->wLength);
 		if (ep_num > 4 || crq->wLength > 2)
 			return 1;
+		if (ep_num == 0) {
+			udc_write(0, GOLDFISH_UDC_INDEX_REG);
+			status = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
+			status = status & GOLDFISH_UDC_EP0_CSR_SENDSTL;
+		} else {
+			udc_write(ep_num, GOLDFISH_UDC_INDEX_REG);
+			if (is_in) {
+				status = udc_read(GOLDFISH_UDC_IN_CSR1_REG);
+				status = status & GOLDFISH_UDC_ICSR1_SENDSTL;
+			} else {
+				status = udc_read(GOLDFISH_UDC_OUT_CSR1_REG);
+				status = status & GOLDFISH_UDC_OCSR1_SENDSTL;
+			}
+		}
 		status = status ? 1 : 0;
 		break;
 
@@ -483,8 +507,11 @@ static int goldfish_udc_get_status(struct goldfish_udc *dev,
 
 	/* Seems to be needed to get it working. ouch :( */
 	udelay(5);
+	udc_write(status & 0xFF, GOLDFISH_UDC_EP0_FIFO_REG);
+	udc_write(status >> 8, GOLDFISH_UDC_EP0_FIFO_REG);
 	goldfish_udc_set_ep0_de_in(base_addr);
 
+	ddprintk("goldfish_udc_get_status:exit");
 	return 0;
 }
 /*------------------------- usb state machine -------------------------------*/
@@ -1036,6 +1063,7 @@ static int goldfish_udc_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 static int goldfish_udc_set_halt(struct usb_ep *_ep, int value)
 {
 	struct goldfish_ep	*ep = to_goldfish_ep(_ep);
+	u32	ep_csr = 0;
 	unsigned long		flags;
 	u32			idx;
 
@@ -1051,6 +1079,31 @@ static int goldfish_udc_set_halt(struct usb_ep *_ep, int value)
 	if (idx == 0) {
 		goldfish_udc_set_ep0_de_out(base_addr);
 	} else {
+		udc_write(idx, GOLDFISH_UDC_INDEX_REG);
+		ep_csr = udc_read((ep->bEndpointAddress &USB_DIR_IN)
+							? GOLDFISH_UDC_IN_CSR1_REG
+							: GOLDFISH_UDC_OUT_CSR1_REG);
+		if ((ep->bEndpointAddress & USB_DIR_IN) != 0) {
+			if (value) {
+				udc_write(ep_csr | GOLDFISH_UDC_ICSR1_SENDSTL,
+										GOLDFISH_UDC_IN_CSR1_REG);
+			} else {
+				ep_csr &= ~GOLDFISH_UDC_ICSR1_SENDSTL;
+				udc_write(ep_csr, GOLDFISH_UDC_IN_CSR1_REG);
+				//ep_csr |= GOLDFISH_UDC_ICSR1_CLRDT;
+				udc_write(ep_csr, GOLDFISH_UDC_IN_CSR1_REG);
+			}
+		} else {
+			if (value) {
+				udc_write(ep_csr | GOLDFISH_UDC_OCSR1_SENDSTL,
+										GOLDFISH_UDC_OUT_CSR1_REG);
+			} else {
+				ep_csr &= ~GOLDFISH_UDC_OCSR1_SENDSTL;
+				udc_write(ep_csr, GOLDFISH_UDC_OUT_CSR1_REG);
+				//ep_csr |= GOLDFISH_UDC_OCSR1_CLRDT;
+				udc_write(ep_csr, GOLDFISH_UDC_OUT_CSR1_REG);
+			}
+		}
 	}
 
 	ep->halted = value ? 1 : 0;

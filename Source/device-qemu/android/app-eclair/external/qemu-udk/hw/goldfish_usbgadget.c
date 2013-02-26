@@ -81,14 +81,88 @@ void hostEventHandler(void *opaque)
 #include "sockets.h"
 static int sock_fd = -1;
 
+static int connectToHost(void);
+static void disconnectToHost(void);
+static void retry_connect_stop(void);
+/**************************************************
+ * コネクション切断時の再接続処理
+ * 再接続処理は以下の契機で起動する
+ * 1) 起動時
+ * 2) 通信異常発生時(send, recv)
+ **************************************************/
+
+/**
+ * コネクション切れたときに再接続要求するためのタイマーオブジェクト
+ */
+static QEMUTimer *goldfish_timer = NULL;
+
+/**
+ * コネクション再接続リトライ時間(0.1sec)
+ */
+static int64_t retry_time;
+
+/**
+ * タイマーをアップデートする
+ */
+static void update_timer(void)
+{
+	int64_t current_time;
+	retry_time = 1000;
+	current_time = qemu_get_clock(vm_clock);
+	printf("current_time=%lld retry_time=%lld\n", current_time, retry_time);
+	qemu_mod_timer(goldfish_timer, current_time + retry_time);
+}
+
+/**
+ * タイマー処理
+ */
+static void doRetryConnect(void *opaque)
+{
+	int ret = connectToHost();
+	if (ret < 0) {
+		printf("doRetryConnect:failed\n");
+		update_timer();
+	} else {
+		printf("doRetryConnect:Success\n");
+		retry_connect_stop();
+	}
+	return;
+}
+/**
+ * タイマースタートする
+ */
+static void retry_connect_start(void)
+{
+	if (goldfish_timer == NULL) {
+		printf("retry_connect_start\n");
+		goldfish_timer = qemu_new_timer(vm_clock, doRetryConnect, NULL);
+		assert(goldfish_timer != NULL);
+		update_timer();
+	}
+}
+
+/**
+ * タイマー停止する
+ */
+static void retry_connect_stop(void)
+{
+	if (goldfish_timer != NULL) {
+		printf("retry_connect_stop\n");
+		qemu_del_timer(goldfish_timer);
+	}
+	goldfish_timer = NULL;
+}
+
+/**************************************************
+ * 通信処理
+ **************************************************/
+
 int recvUsbData(char *bufp, int len)
 {
 	int ret;
 	ret = socket_recv(sock_fd, bufp, len);
 	if (ret <= 0) {
-        	qemu_set_fd_handler(sock_fd, NULL, NULL, NULL);
-		close(sock_fd);
-		sock_fd = -1;
+		disconnectToHost();
 	}
 	return ret;
 }
@@ -99,6 +173,9 @@ int sendUsbData(char *bufp, int len)
 	//ret = socket_send(sock_fd, bufp, len);
 	printf("before send\n");
 	ret = send(sock_fd, bufp, len, MSG_DONTWAIT);
+	if (ret <= 0) {
+		disconnectToHost();
+	}
 	printf("ret=%d err=%d\n", ret, errno);
 	//fsync(sock_fd);
 	return ret;
@@ -115,17 +192,17 @@ void declareDevice(void)
 	printf("***** declareDevice:ret=%d\n", ret);
 }
 
-static int connectToHost(const char *path)
+static int connectToHost(void)
 {
 	int flag = 1;
 	int sock;
 	struct sockaddr_in in;
 
 	if (sock_fd != -1) {
-		return;
+		return 0;
 	}
 
-	dbg("connectToHost:%s\n", path);
+	dbg("connectToHost\n");
 	sock = socket(PF_INET, SOCK_STREAM, 0);
 	if (sock < 0) {
 		perror("socket(inet)");
@@ -135,30 +212,31 @@ static int connectToHost(const char *path)
 	in.sin_family = PF_INET;
 	in.sin_port = htons(10000);
 	inet_aton("127.0.0.1", &(in.sin_addr));
-	sock_fd = sock;
 	printf("before socket_set_nonblock\n");
-	socket_set_nonblock(sock_fd);
-	fcntl(sock_fd, F_SETFL, O_NONBLOCK);
+	socket_set_nonblock(sock);
+	fcntl(sock, F_SETFL, O_NONBLOCK);
 	printf("before setsockopt\n");
-	(void)setsockopt(sock_fd, SOL_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
+	(void)setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
 	printf("before connect\n");
 	if (connect(sock, (struct sockaddr*) &in, sizeof(in)) < 0) {
 		int ret = errno;
 		printf("err=%d\n", errno);
 		if (errno == EINPROGRESS) {
 			char byte;
-			ret = recv(sock_fd, &byte, sizeof(byte), MSG_PEEK);
+			ret = recv(sock, &byte, sizeof(byte), MSG_PEEK);
 			if (ret == 0 || (ret < 0 && errno == EAGAIN)) {
 				printf("EINPROGRESS bug OK connect\n");
 			} else {
+				close(sock);
 				printf("err=%d\n", errno);
 				return -1;
 			}
 		} else {
+			close(sock);
 			return -1;
 		}
 	}
-
+	sock_fd = sock;
 	declareDevice();
         qemu_set_fd_handler(sock_fd, hostEventHandler, NULL, NULL);
 	return 0;
@@ -167,11 +245,17 @@ static void disconnectToHost(void)
 {
 	if (sock_fd != -1) {
 		dbg("close:sock_fd = %d\n", sock_fd);
+        	qemu_set_fd_handler(sock_fd, NULL, NULL, NULL);
 		close(sock_fd);
 		sock_fd = -1;
+		retry_connect_start();
 	}
 }
 /********************************************************/
+
+/**************************************************
+ * レジスタアクセス処理
+ **************************************************/
 
 static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset)
 {
@@ -307,5 +391,6 @@ void goldfish_usbgadget_init(uint32_t usbgadgetbase, int usbgadgetirq)
 			goldfish_usbgadget_save, 
 			goldfish_usbgadget_load, 
 			&usbgadget_state);
-	connectToHost(NULL);
+	//connectToHost();
+	retry_connect_start();
 }

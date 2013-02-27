@@ -17,134 +17,17 @@
 #include "monitor.h"
 #include "sysemu.h"
 #include "blockdev.h"
-#include "ch9.h"
+#include "goldfish_usbgadget_prot.h"
+#include "iov.h"
 
 #define USE_PROTO_ANALYZER
-/* token PID */
-#define USB_PID_OUT             0x1
-#define USB_PID_IN              0x9
-#define USB_PID_SOF             0x5
-#define USB_PID_SETUP           0xD
-
-/* data PID */
-#define USB_PID_DATA_0          0x3
-#define USB_PID_DATA_1          0xB
-#define USB_PID_DATA_2          0x7
-#define USB_PID_MDATA           0xF
-
-/* handshake PID */
-#define USB_PID_ACK             0x2
-#define USB_PID_NAK             0xA
-#define USB_PID_STALL           0xC
-#define USB_PID_NYET            0x6
-typedef unsigned char __u8;
-typedef unsigned short __le16;
-#if 0
-struct usb_ctrlrequest {
-        __u8 bRequestType;
-        __u8 bRequest;
-        __le16 wValue;
-        __le16 wIndex;
-        __le16 wLength;
-} __attribute__ ((packed));
-#endif
-
-struct usb_packet {
-        __u8 pid;
-        __u8 padding[3];
-#ifdef USE_PROTO_ANALYZER
-        __u8 padding1[4];
-#endif
-};
-struct usb_packet_token {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 dir; /* 0:HOST->SLAVE, 1:SLAVE->HOST */
-        __u8 padding[1];
-#ifdef USE_PROTO_ANALYZER
-        __u8 padding1[4];
-#endif
-};
-#ifdef USE_PROTO_ANALYZER
-struct usb_packet_data_head {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 dir; /* 0:HOST->SLAVE, 1:SLAVE->HOST */
-        __u8 padding[1];
-        __le16 datalen;
-        __u8 padding1[2];
-};
-struct usb_packet_data {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 dir; /* 0:HOST->SLAVE, 1:SLAVE->HOST */
-        __u8 padding[1];
-        __le16 datalen;
-        __u8 padding1[2];
-        __u8 data[4];
-};
-struct usb_packet_setupdata {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 dir; /* 0:HOST->SLAVE, 1:SLAVE->HOST */
-        __u8 padding1[1];
-        __le16 datalen;
-        __u8 padding2[2];
-        struct usb_ctrlrequest req;     /* 8bytes */
-};
-struct usb_packet_handshake {
-        __u8 pid_handshake;
-        __u8 endpoint;
-        __u8 dir; /* 0:HOST->SLAVE, 1:SLAVE->HOST */
-        __u8 padding[1];
-        __u8 padding1[4];
-};
-#else
-struct usb_packet_data {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 pid_data;
-        __u8 padding;
-        __le16 datalen;
-        __u8 data[2];
-};
-struct usb_packet_handshake {
-        __u8 pid_handshake;
-        __u8 padding[4];
-};
-#endif
-
-struct usb_packet_setup {
-        __u8 pid_token;
-        __u8 endpoint;
-        __u8 pid_data;
-        __u8 padding[1];
-        struct usb_ctrlrequest req;     /* 8bytes */
-#ifdef USE_PROTO_ANALYZER
-        __u8 padding1[4];
-#endif
-};
-
-struct usb_packet_setup_DescriptorRes {
-        __u8 pid_handshake;
-        __u8 pid_data;
-        __u8 padding[2];
-        __u8 data[1];
-#ifdef USE_PROTO_ANALYZER
-        __u8 padding1[4];
-#endif
-};
 struct usb_packet_setup_DescriptorDeviceRes {
         __u8 pid_handshake;
         __u8 pid_data;
         __u8 padding[2];
 	struct usb_device_descriptor desc;
-#ifdef USE_PROTO_ANALYZER
         __u8 padding1[4];
-#endif
 };
-#define DIR_HOST_TO_SLAVE	0x0
-#define DIR_SLAVE_TO_HOST	0x1
 //#define DEBUG_MSD
 static void sendOUT(struct usb_packet_token *tp, struct usb_packet_data *dp);
 static void sendIN(struct usb_packet_token *tp, struct usb_packet_data *dp);
@@ -269,129 +152,6 @@ enum {
     STR_CONFIG_HIGH,
 };
 
-static const USBDescStrings desc_strings = {
-    [STR_MANUFACTURER] = "QEMU",
-    [STR_PRODUCT]      = "QEMU USB GOLDFISH",
-    [STR_SERIALNUMBER] = "1",
-    [STR_CONFIG_FULL]  = "Full speed config (usb 1.1)",
-    [STR_CONFIG_HIGH]  = "High speed config (usb 2.0)",
-};
-
-static const USBDescIface desc_iface_full = {
-    .bInterfaceNumber              = 0,
-    .bNumEndpoints                 = 2,
-    .bInterfaceClass               = USB_CLASS_MASS_STORAGE,
-    .bInterfaceSubClass            = 0x06, /* SCSI */
-    .bInterfaceProtocol            = 0x50, /* Bulk */
-    .eps = (USBDescEndpoint[]) {
-        {
-            .bEndpointAddress      = USB_DIR_IN | 0x01,
-            .bmAttributes          = USB_ENDPOINT_XFER_BULK,
-            .wMaxPacketSize        = 64,
-        },{
-            .bEndpointAddress      = USB_DIR_OUT | 0x02,
-            .bmAttributes          = USB_ENDPOINT_XFER_BULK,
-            .wMaxPacketSize        = 64,
-        },
-    }
-};
-
-static const USBDescDevice desc_device_full = {
-    .bcdUSB                        = 0x0200,
-    .bMaxPacketSize0               = 8,
-    .bNumConfigurations            = 1,
-    .confs = (USBDescConfig[]) {
-        {
-            .bNumInterfaces        = 1,
-            .bConfigurationValue   = 1,
-            .iConfiguration        = STR_CONFIG_FULL,
-            .bmAttributes          = 0xc0,
-            .nif = 1,
-            .ifs = &desc_iface_full,
-        },
-    },
-};
-
-static const USBDescIface desc_iface_high = {
-    .bInterfaceNumber              = 0,
-    .bNumEndpoints                 = 2,
-    .bInterfaceClass               = USB_CLASS_MASS_STORAGE,
-    .bInterfaceSubClass            = 0x06, /* SCSI */
-    .bInterfaceProtocol            = 0x50, /* Bulk */
-    .eps = (USBDescEndpoint[]) {
-        {
-            .bEndpointAddress      = USB_DIR_IN | 0x01,
-            .bmAttributes          = USB_ENDPOINT_XFER_BULK,
-            .wMaxPacketSize        = 512,
-        },{
-            .bEndpointAddress      = USB_DIR_OUT | 0x02,
-            .bmAttributes          = USB_ENDPOINT_XFER_BULK,
-            .wMaxPacketSize        = 512,
-        },
-    }
-};
-
-static const USBDescDevice desc_device_high = {
-    .bcdUSB                        = 0x0200,
-    .bMaxPacketSize0               = 64,
-    .bNumConfigurations            = 1,
-    .confs = (USBDescConfig[]) {
-        {
-            .bNumInterfaces        = 1,
-            .bConfigurationValue   = 1,
-            .iConfiguration        = STR_CONFIG_HIGH,
-            .bmAttributes          = 0xc0,
-            .nif = 1,
-            .ifs = &desc_iface_high,
-        },
-    },
-};
-
-static const USBDesc desc = {
-    .id = {
-        .idVendor          = 0x46f4, /* CRC16() of "QEMU" */
-        .idProduct         = 0x0001,
-        .bcdDevice         = 0,
-        .iManufacturer     = STR_MANUFACTURER,
-        .iProduct          = STR_PRODUCT,
-        .iSerialNumber     = STR_SERIALNUMBER,
-    },
-    .full = &desc_device_full,
-    .high = &desc_device_high,
-    .str  = desc_strings,
-};
-
-static void usb_goldfish_copy_data(MSDState *s, USBPacket *p)
-{
-    uint32_t len;
-    len = p->iov.size - p->result;
-DPRINTF("usb_goldfish_copy_data:enter\n");
-    if (len > s->scsi_len)
-        len = s->scsi_len;
-    usb_packet_copy(p, scsi_req_get_buf(s->req) + s->scsi_off, len);
-    s->scsi_len -= len;
-    s->scsi_off += len;
-    s->data_len -= len;
-    if (s->scsi_len == 0 || s->data_len == 0) {
-        scsi_req_continue(s->req);
-    }
-DPRINTF("usb_goldfish_copy_data:exit\n");
-}
-
-static void usb_goldfish_send_status(MSDState *s, USBPacket *p)
-{
-    int len;
-
-    DPRINTF("Command status %d tag 0x%x, len %zd\n",
-            s->csw.status, le32_to_cpu(s->csw.tag), p->iov.size);
-
-    assert(s->csw.sig == cpu_to_le32(0x53425355));
-    len = MIN(sizeof(s->csw), p->iov.size);
-    usb_packet_copy(p, &s->csw, len);
-    memset(&s->csw, 0, sizeof(s->csw));
-    DPRINTF("Command status:exit\n");
-}
-
 static void usb_goldfish_packet_complete(MSDState *s)
 {
     USBPacket *p = s->packet;
@@ -404,78 +164,6 @@ DPRINTF("usb_goldfish_packet_complete:enter\n");
     s->packet = NULL;
     usb_packet_complete(&s->dev, p);
 DPRINTF("usb_goldfish_packet_complete:exit\n");
-}
-
-static void usb_goldfish_transfer_data(SCSIRequest *req, uint32_t len)
-{
-    MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
-    USBPacket *p = s->packet;
-DPRINTF("usb_goldfish_transfer_data:enter\n");
-
-    assert((s->mode == USB_MSDM_DATAOUT) == (req->cmd.mode == SCSI_XFER_TO_DEV));
-    s->scsi_len = len;
-    s->scsi_off = 0;
-    if (p) {
-        usb_goldfish_copy_data(s, p);
-        p = s->packet;
-        if (p && p->result == p->iov.size) {
-            usb_goldfish_packet_complete(s);
-        }
-    }
-DPRINTF("usb_goldfish_transfer_data:exit\n");
-}
-
-static void usb_goldfish_command_complete(SCSIRequest *req, uint32_t status, size_t resid)
-{
-    MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
-    USBPacket *p = s->packet;
-
-    DPRINTF("Command complete %d tag 0x%x\n", status, req->tag);
-
-    s->csw.sig = cpu_to_le32(0x53425355);
-    s->csw.tag = cpu_to_le32(req->tag);
-    s->csw.residue = cpu_to_le32(s->data_len);
-    s->csw.status = status != 0;
-
-    if (s->packet) {
-        if (s->data_len == 0 && s->mode == USB_MSDM_DATAOUT) {
-            /* A deferred packet with no write data remaining must be
-               the status read packet.  */
-            usb_goldfish_send_status(s, p);
-            s->mode = USB_MSDM_CBW;
-        } else if (s->mode == USB_MSDM_CSW) {
-            usb_goldfish_send_status(s, p);
-            s->mode = USB_MSDM_CBW;
-        } else {
-            if (s->data_len) {
-                int len = (p->iov.size - p->result);
-                usb_packet_skip(p, len);
-                s->data_len -= len;
-            }
-            if (s->data_len == 0) {
-                s->mode = USB_MSDM_CSW;
-            }
-        }
-        usb_goldfish_packet_complete(s);
-    } else if (s->data_len == 0) {
-        s->mode = USB_MSDM_CSW;
-    }
-    scsi_req_unref(req);
-    s->req = NULL;
-    DPRINTF("Command complete:exit\n");
-}
-
-static void usb_goldfish_request_cancelled(SCSIRequest *req)
-{
-    MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
-
-DPRINTF("usb_goldfish_request_cancelled:enter\n");
-    if (req == s->req) {
-        scsi_req_unref(s->req);
-        s->req = NULL;
-        s->scsi_len = 0;
-    }
-DPRINTF("usb_goldfish_request_cancelled:exit\n");
 }
 
 static void usb_goldfish_handle_reset(USBDevice *dev)
@@ -497,7 +185,6 @@ static void usb_goldfish_handle_reset(USBDevice *dev)
     DPRINTF("usb_goldfish_handle_reset:exit\n");
 }
 
-#if 1
 static void printDevDesc(struct usb_device_descriptor *dp)
 {
 	DPRINTF("*****printDevDesc*******\n");
@@ -535,7 +222,7 @@ static void printConfigDesc(struct usb_config_descriptor *dp)
         PDESC("Config", dp, iConfiguration);
         PDESC("Config", dp, bmAttributes);
         PDESC("Config", dp,bMaxPower);
-	idp = ++dp; /* TODO */
+        idp = (struct usb_interface_descriptor *)++dp; /* TODO */
 	for (i_inf = 0; i_inf < dp->bNumInterfaces; i_inf++) {
 		PDESC("Inf", idp, bLength);
 		PDESC("Inf", idp, bDescriptorType);
@@ -546,7 +233,7 @@ static void printConfigDesc(struct usb_config_descriptor *dp)
 		PDESC("Inf", idp, bInterfaceSubClass);
 		PDESC("Inf", idp, bInterfaceProtocol);
 		PDESC("Inf", idp, iInterface);
-		ep = (idp + 1); /* TODO */
+		ep = (struct usb_endpoint_descriptor *)(idp + 1); /* TODO */
 		for (i_ep = 0; i_ep < idp->bNumEndpoints; i_ep++) {
 			PDESC("Endp", ep, bLength);
 			PDESC("Endp", ep, bDescriptorType);
@@ -554,9 +241,9 @@ static void printConfigDesc(struct usb_config_descriptor *dp)
 			PDESC("Endp", ep, bmAttributes);
 			PDESC("Endp", ep, wMaxPacketSize);
 			PDESC("Endp", ep, bInterval);
-			ep = (((char*)ep) + ep->bLength);
+			ep = (struct usb_endpoint_descriptor *)(((char*)ep) + ep->bLength);
 		}
-		idp = ep;
+		idp = (struct usb_interface_descriptor *)ep;
 	}
 }
 
@@ -631,52 +318,11 @@ static void createGET_DESCRIPTOR(struct usb_ctrlrequest *req,
 }
 
 static int client_fd = -1;
-#if 1
-static int sendRecvPacket(const char *sendBufp, int sendLen, 
-				char *recvBufp, int recvLen)
-{
-	int ret = 0;
-	int len = 0;
-#ifdef USE_PROTO_ANALYZER /* for protocol analyer.. */
-#if 0
-	static char realSendBuf[10240];
-	int *lenp;
-	lenp = (int*)realSendBuf;
-	*lenp = sendLen;
-	lenp++;
-	memcpy((char*)lenp, sendBufp, sendLen);
-	sendBufp = realSendBuf;
-	sendLen += 4;
-#endif
-#endif
-	ret = qemu_send_full(client_fd, sendBufp, sendLen, 0);
-	DPRINTF("qemu_send_full():ret=%d\n", ret);
 
-
-	if (ret == sendLen) {
-		ret = qemu_recv_full(client_fd, &len, 4, 0);
-		DPRINTF("sendRecvPacket:ret =%d len = %d errno=%d\n", ret, len, errno);
-		if (ret != 4) {
-			ret = -1;
-		} else {
-			ret = qemu_recv_full(client_fd, 
-				recvBufp, len, 0);
-			if (ret == len) {
-				ret = 0;
-			} else {
-				ret = -1;
-			}
-		}
-	} else {
-		ret = -1;
-	}
-	return ret;
-}
 static int sendRecvDataPacket(int pid, int endpoint, 
 			const char* sendBufp, int sendLen,
 				char *recvBufp, int recvLen)
 {
-#ifdef USE_PROTO_ANALYZER
 	struct usb_packet_handshake *resp;
 	struct usb_packet_token token;
 	struct usb_packet_data *datap;
@@ -703,41 +349,9 @@ static int sendRecvDataPacket(int pid, int endpoint,
 		memcpy(datap->data, sendBufp, sendLen);
 		sendOUT(&token, datap);
 		break;
-	defaults:
+	default:
 		break;
 	}
-#else
-	int ret;
-	static char sendBuf[4096*3];
-	struct usb_packet_data *packetp;
-	struct usb_packet_handshake *resp;
-
-	packetp = (struct usb_packet_data *)sendBuf;
-	resp = (struct usb_packet_handshake *)recvBufp;
-
-	packetp->pid_token = pid;
-	packetp->endpoint = endpoint;
-	packetp->datalen = sendLen;
-	memcpy(packetp->data, sendBufp, sendLen);
-	DPRINTF("sendRecvDataPacket:pid=%d\n", packetp->pid_token);
-	DPRINTF("sendRecvDataPacket:endp=%d\n", packetp->endpoint);
-	DPRINTF("sendRecvDataPacket:datalen=%d\n", packetp->datalen);
-
-	ret = sendRecvPacket((const char*)packetp, (6 + sendLen),
-			recvBufp, recvLen);
-	// need to check caller IN/OUT
-	switch (pid) {
-	case USB_PID_IN:
-		// check ack
-		// get data
-		break;
-	case USB_PID_OUT:
-		// only ack...
-		break;
-	defaults:
-		break;
-	}
-#endif
 	//DPRINTF("sendRecvDataPacket():ret=%d pid=0x%x\n", 
 	//		ret, resp->pid_handshake);
 	return 0;
@@ -749,7 +363,6 @@ static void sendRecvSetupPacket(int request,
 	static char recvBuf[4096*3];
 	struct usb_packet_setup packet;
 	struct usb_packet_handshake *resp;
-	int ret;
 
 	DPRINTF("sendRecvSetupPacket:request=0x%x\n", request);
 	packet.pid_token = USB_PID_SETUP;
@@ -760,13 +373,8 @@ static void sendRecvSetupPacket(int request,
 		struct usb_packet_handshake res;
 		resp = (struct usb_packet_handshake *)&res;
 		createSET_CONFIGURATION(&packet.req, wValue, wIndex, wLength);
-#ifdef USE_PROTO_ANALYZER
 		sendNoDataSETUP((struct usb_packet_token*)&packet, &packet.req);
 		resp->pid_handshake = USB_PID_ACK;
-#else
-		ret = sendRecvPacket((const char*)&packet, sizeof(packet),
-				(char*)&res, sizeof(res));
-#endif
 		break;
 	}
 	case USB_REQ_SET_ADDRESS:
@@ -774,13 +382,8 @@ static void sendRecvSetupPacket(int request,
 		struct usb_packet_handshake res;
 		resp = (struct usb_packet_handshake *)&res;
 		createSET_ADDRESS(&packet.req, wValue, wIndex, wLength);
-#ifdef USE_PROTO_ANALYZER
 		sendNoDataSETUP((struct usb_packet_token*)&packet, &packet.req);
 		resp->pid_handshake = USB_PID_ACK;
-#else
-		ret = sendRecvPacket((const char*)&packet, sizeof(packet),
-				(char*)&res, sizeof(res));
-#endif
 		break;
 	}
 	case USB_REQ_SET_INTERFACE:
@@ -788,13 +391,8 @@ static void sendRecvSetupPacket(int request,
 		struct usb_packet_handshake res;
 		resp = (struct usb_packet_handshake *)&res;
 		createSET_INTERFACE(&packet.req, wValue, wIndex, wLength);
-#ifdef USE_PROTO_ANALYZER
 		sendNoDataSETUP((struct usb_packet_token*)&packet, &packet.req);
 		resp->pid_handshake = USB_PID_ACK;
-#else
-		ret = sendRecvPacket((const char*)&packet, sizeof(packet),
-				(char*)&res, sizeof(res));
-#endif
 		break;
 	}
 	case USB_REQ_GET_DESCRIPTOR:
@@ -811,33 +409,25 @@ static void sendRecvSetupPacket(int request,
 			//createGET_DESCRIPTOR(&packet.req, wValue, 0x12);
 			createGET_DESCRIPTOR(&packet.req, wValue, wIndex, wLength);
 		}
-#ifdef USE_PROTO_ANALYZER
 		sendDataSETUP((struct usb_packet_token*)&packet, &packet.req, (char*)&res->desc);
 		resp->pid_handshake = USB_PID_ACK;
-#else
-		ret = sendRecvPacket((const char*)&packet, sizeof(packet),
-				recvBuf, 4096*3);
-#endif
 		if (wValue ==  (USB_DT_CONFIG << 8)) {
-			printConfigDesc(&res->desc);
+			printConfigDesc((struct usb_config_descriptor *)&res->desc);
 		} else if (wValue ==  (USB_DT_STRING << 8)) {
-			printStringDesc(&res->desc);
+			printStringDesc((struct usb_string_descriptor *)&res->desc);
 		} else if (wValue ==  (USB_DT_DEVICE << 8)) {
 			printDevDesc(&res->desc);
 		}
 		*data = (struct usb_packet_setup_DescriptorDeviceRes *)recvBuf;
 		break;
 	}
-	defaults:
+	default:
 		break;
 	}
 
 	DPRINTF("qemu_recv_full():ret=%d pid=0x%x\n", 
 			ret, resp->pid_handshake);
 }
-#endif
-
-#endif
 
 /*
  * static void sendRecvSetupPacket(int request,
@@ -857,7 +447,7 @@ DPRINTF("usb_goldfish_handle_control:enter:request=0x%x\n", request);
     case USB_REQ_SET_CONFIGURATION:
     	sendRecvSetupPacket((request & 0xFF), value, index, length, NULL);
 	break;
-    defaults:
+    default:
 	break;
     }
     ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
@@ -902,7 +492,7 @@ DPRINTF("usb_goldfish_handle_cancel_io:enter:p=0x%x\n", p);
 DPRINTF("usb_goldfish_cancel_io:exit\n");
 }
 
-static int handshake2ret(pid)
+static int handshake2ret(int pid)
 {
 	int ret = USB_RET_STALL;
 	switch (pid) {
@@ -918,7 +508,7 @@ static int handshake2ret(pid)
 	case USB_PID_NYET:
 		ret = USB_RET_NAK;
 		break;
-	defaults:
+	default:
 		break;
 	}
 	return ret;
@@ -963,7 +553,6 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 	case USB_TOKEN_IN:
 {
 		struct usb_packet_data *resp;
-#if 1
 		int off = 0;
 		resp = (struct usb_packet_data *)recvBuf;
 		while (1) {
@@ -981,287 +570,23 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 			}
 			off += resp->datalen;
 		}
-#else
-		ret = sendRecvDataPacket(USB_PID_IN, devep, 
-			NULL, 0, (char*)resp, 4096*3);
-		if (ret != 0) {
-			ret = USB_RET_STALL;
-		} else {
-			ret = handshake2ret(resp->pid_token);
-			if (!ret) {
-printf("usb_goldfish_handle_data:IN:iov_size=%d data_len=%d\n", p->iov.size, resp->datalen);
-            			usb_packet_copy(p, &resp->data[0], resp->datalen);
-				ret = p->result;
-			}
-		}
-#endif
 }
 		break;
-	defaults:
+	default:
 		break;
 	}
-#ifdef TODO
-    MSDState *s = (MSDState *)dev;
-    uint32_t tag;
-    int ret = 0;
-    struct usb_goldfish_cbw cbw;
-    uint8_t devep = p->ep->nr;
-
-    switch (p->pid) {
-    case USB_TOKEN_OUT:
-        if (devep != 2)
-            goto fail;
-
-        switch (s->mode) {
-        case USB_MSDM_CBW:
-            if (p->iov.size != 31) {
-                fDPRINTF(stderr, "usb-msd: Bad CBW size");
-                goto fail;
-            }
-            usb_packet_copy(p, &cbw, 31);
-            if (le32_to_cpu(cbw.sig) != 0x43425355) {
-                fDPRINTF(stderr, "usb-msd: Bad signature %08x\n",
-                        le32_to_cpu(cbw.sig));
-                goto fail;
-            }
-            DPRINTF("Command on LUN %d\n", cbw.lun);
-            if (cbw.lun != 0) {
-                fDPRINTF(stderr, "usb-msd: Bad LUN %d\n", cbw.lun);
-                goto fail;
-            }
-            tag = le32_to_cpu(cbw.tag);
-            s->data_len = le32_to_cpu(cbw.data_len);
-            if (s->data_len == 0) {
-                s->mode = USB_MSDM_CSW;
-            } else if (cbw.flags & 0x80) {
-                s->mode = USB_MSDM_DATAIN;
-            } else {
-                s->mode = USB_MSDM_DATAOUT;
-            }
-            DPRINTF("Command tag 0x%x flags %08x len %d data %d\n",
-                    tag, cbw.flags, cbw.cmd_len, s->data_len);
-            assert(le32_to_cpu(s->csw.residue) == 0);
-            s->scsi_len = 0;
-            s->req = scsi_req_new(s->scsi_dev, tag, 0, cbw.cmd, NULL);
-#ifdef DEBUG_MSD
-            scsi_req_print(s->req);
-#endif
-            scsi_req_enqueue(s->req);
-            if (s->req && s->req->cmd.xfer != SCSI_XFER_NONE) {
-                scsi_req_continue(s->req);
-            }
-            ret = p->result;
-            break;
-
-        case USB_MSDM_DATAOUT:
-            DPRINTF("Data out %zd/%d\n", p->iov.size, s->data_len);
-            if (p->iov.size > s->data_len) {
-                goto fail;
-            }
-
-            if (s->scsi_len) {
-                usb_goldfish_copy_data(s, p);
-            }
-            if (le32_to_cpu(s->csw.residue)) {
-                int len = p->iov.size - p->result;
-                if (len) {
-                    usb_packet_skip(p, len);
-                    s->data_len -= len;
-                    if (s->data_len == 0) {
-                        s->mode = USB_MSDM_CSW;
-                    }
-                }
-            }
-            if (p->result < p->iov.size) {
-                DPRINTF("Deferring packet %p [wait data-out]\n", p);
-                s->packet = p;
-                ret = USB_RET_ASYNC;
-            } else {
-                ret = p->result;
-            }
-            break;
-
-        default:
-            DPRINTF("Unexpected write (len %zd)\n", p->iov.size);
-            goto fail;
-        }
-        break;
-
-    case USB_TOKEN_IN:
-        if (devep != 1)
-            goto fail;
-
-        switch (s->mode) {
-        case USB_MSDM_DATAOUT:
-            if (s->data_len != 0 || p->iov.size < 13) {
-                goto fail;
-            }
-            /* Waiting for SCSI write to complete.  */
-            s->packet = p;
-            ret = USB_RET_ASYNC;
-            break;
-
-        case USB_MSDM_CSW:
-            if (p->iov.size < 13) {
-                goto fail;
-            }
-
-            if (s->req) {
-                /* still in flight */
-                DPRINTF("Deferring packet %p [wait status]\n", p);
-                s->packet = p;
-                ret = USB_RET_ASYNC;
-            } else {
-                usb_goldfish_send_status(s, p);
-                s->mode = USB_MSDM_CBW;
-                ret = 13;
-            }
-            break;
-
-        case USB_MSDM_DATAIN:
-            DPRINTF("Data in %zd/%d, scsi_len %d\n",
-                    p->iov.size, s->data_len, s->scsi_len);
-            if (s->scsi_len) {
-                usb_goldfish_copy_data(s, p);
-            }
-            if (le32_to_cpu(s->csw.residue)) {
-                int len = p->iov.size - p->result;
-                if (len) {
-                    usb_packet_skip(p, len);
-                    s->data_len -= len;
-                    if (s->data_len == 0) {
-                        s->mode = USB_MSDM_CSW;
-                    }
-                }
-            }
-            if (p->result < p->iov.size) {
-                DPRINTF("Deferring packet %p [wait data-in]\n", p);
-                s->packet = p;
-                ret = USB_RET_ASYNC;
-            } else {
-                ret = p->result;
-            }
-            break;
-
-        default:
-            DPRINTF("Unexpected read (len %zd)\n", p->iov.size);
-            goto fail;
-        }
-        break;
-
-    default:
-        DPRINTF("Bad token\n");
-    fail:
-        ret = USB_RET_STALL;
-        break;
-    }
-#endif
 DPRINTF("usb_goldfish_handle_data:exit:ret=0x%x\n", ret);
 
     return ret;
 }
 
-static void usb_goldfish_password_cb(void *opaque, int err)
-{
-    MSDState *s = opaque;
-
-    if (!err)
-        err = usb_device_attach(&s->dev);
-
-    if (err)
-        qdev_unplug(&s->dev.qdev, NULL);
-}
-
-static void *usb_goldfish_load_request(QEMUFile *f, SCSIRequest *req)
-{
-    MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
-
-DPRINTF("usb_goldfish_load_request:enter\n");
-    /* nothing to load, just store req in our state struct */
-    assert(s->req == NULL);
-    scsi_req_ref(req);
-    s->req = req;
-DPRINTF("usb_goldfish_load_request:exit\n");
-    return NULL;
-}
-
-static const struct SCSIBusInfo usb_goldfish_scsi_info = {
-    .tcq = false,
-    .max_target = 0,
-    .max_lun = 0,
-
-    .transfer_data = usb_goldfish_transfer_data,
-    .complete = usb_goldfish_command_complete,
-    .cancel = usb_goldfish_request_cancelled,
-    .load_request = usb_goldfish_load_request,
-};
-
 static int usb_goldfish_initfn(USBDevice *dev)
 {
-    MSDState *s = DO_UPCAST(MSDState, dev, dev);
-    BlockDriverState *bs = s->conf.bs;
 DPRINTF("usb_goldfish_initfn()\n");
 
-#ifdef TODO
-    if (!bs) {
-        error_report("drive property not set");
-        return -1;
-    }
-
-    blkconf_serial(&s->conf, &s->serial);
-
-    /*
-     * Hack alert: this pretends to be a block device, but it's really
-     * a SCSI bus that can serve only a single device, which it
-     * creates automatically.  But first it needs to detach from its
-     * blockdev, or else scsi_bus_legacy_add_drive() dies when it
-     * attaches again.
-     *
-     * The hack is probably a bad idea.
-     */
-    bdrv_detach_dev(bs, &s->dev.qdev);
-    s->conf.bs = NULL;
-
-    if (s->serial) {
-        usb_desc_set_string(dev, STR_SERIALNUMBER, s->serial);
-    } else {
-        usb_desc_create_serial(dev);
-    }
-
-    usb_desc_init(dev);
-    scsi_bus_new(&s->bus, &s->dev.qdev, &usb_goldfish_scsi_info);
-    s->scsi_dev = scsi_bus_legacy_add_drive(&s->bus, bs, 0, !!s->removable,
-                                            s->conf.bootindex);
-    if (!s->scsi_dev) {
-        return -1;
-    }
-    s->bus.qbus.allow_hotplug = 0;
-    usb_goldfish_handle_reset(dev);
-
-    if (bdrv_key_required(bs)) {
-        if (cur_mon) {
-            monitor_read_bdrv_key_start(cur_mon, bs, usb_goldfish_password_cb, s);
-            s->dev.auto_attach = 0;
-        } else {
-            autostart = 0;
-        }
-    }
-#endif
     return 0;
 }
 
-#if 1
-static int usb_device_init(USBDevice *dev)
-{
-    USBDeviceClass *klass = USB_DEVICE_GET_CLASS(dev);
-    if (klass->init) {
-        return klass->init(dev);
-    }
-    return 0;
-}
-
-static USBDescIface	goldfish_desc_iface_full;
-static USBDescDevice	goldfish_desc_device_full;
 static USBDescIface	goldfish_desc_iface_high[2];/* ADB, MASS */
 static USBDescEndpoint	goldfish_desc_endpoint[4];/* ADB, MASS */
 static USBDescDevice	goldfish_desc_device_high;
@@ -1285,29 +610,19 @@ static int usb_goldfish_init2(USBDevice *dev)
     if (rc != 0) {
         return rc;
     }
-#if 0
-    rc = usb_device_init(dev);
-    if (rc != 0) {
-        usb_release_port(dev);
-        return rc;
-    }
-#endif
-#if 1
     if (dev->auto_attach) {
         rc = usb_device_attach(dev);
         if (rc != 0) {
             return rc;
         }
     }
-#endif
     return 0;
 }
-#endif
 
 #include "qemu_socket.h"
 
 static int sock_fd = -1;
-static char *sock_vusb_path = "/tmp/vusb.sock";
+
 static void vusb_client_read(void *opaque)
 {
 	int ret;
@@ -1322,7 +637,6 @@ static void vusb_client_read(void *opaque)
 	}
 	DPRINTF("vusb_client_read:exit\n");
 }
-#ifdef USE_PROTO_ANALYZER
 /**
  * send (SETUP/OUT) TOKEN
  * send DATA
@@ -1375,6 +689,7 @@ static void sendIN(struct usb_packet_token *tp, struct usb_packet_data *dp)
 }
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+extern int usb_device_add(const char *devname);
 static void vusb_attach(void *opaque)
 {
 	int flag = 1;
@@ -1393,72 +708,15 @@ static void vusb_attach(void *opaque)
 	DPRINTF("vusb_attach:exit\n");
 	return;
 }
-#else
-static void vusb_attach(void *opaque)
-{
-	struct sockaddr_un addr;
-	socklen_t addrlen = sizeof(addr);
-	DPRINTF("vusb_attach:enter\n");
-	client_fd = qemu_accept(sock_fd,
-			(struct sockaddr *)&addr, &addrlen);
-	if (client_fd == -1) {
-		DPRINTF("error accept: %s", strerror(errno));
-		return;
-	}
-	qemu_set_fd_handler(client_fd, vusb_client_read, NULL, NULL);
-	usb_device_add("goldfish");
-	DPRINTF("vusb_attach:exit\n");
-	return;
-}
-#endif
 /***************** USB プロトコル層 ******************/
 /****************************************************/
 static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
 {
-    static int nr=0;
-    char id[8];
-    QemuOpts *opts;
-    DriveInfo *dinfo;
     USBDevice *dev;
-    const char *p1;
-    char fmt[32];
     DPRINTF("usb_goldfish_init:bus=0x%x\n", bus);
 
 
     /* parse -usbdevice disk: syntax into drive opts */
-#ifdef TODO
-    snDPRINTF(id, sizeof(id), "usb%d", nr++);
-    opts = qemu_opts_create(qemu_find_opts("drive"), id, 0, NULL);
-
-    p1 = strchr(filename, ':');
-    if (p1++) {
-        const char *p2;
-
-        if (strstart(filename, "format=", &p2)) {
-            int len = MIN(p1 - p2, sizeof(fmt));
-            pstrcpy(fmt, len, p2);
-            qemu_opt_set(opts, "format", fmt);
-        } else if (*filename != ':') {
-            DPRINTF("unrecognized USB mass-storage option %s\n", filename);
-            return NULL;
-        }
-        filename = p1;
-    }
-    if (!*filename) {
-        DPRINTF("block device specification needed\n");
-        return NULL;
-    }
-    qemu_opt_set(opts, "file", filename);
-    DPRINTF("usb_goldfish_init:1\n");
-    qemu_opt_set(opts, "if", "none");
-
-    /* create host drive */
-    dinfo = drive_init(opts, 0);
-    if (!dinfo) {
-        qemu_opts_del(opts);
-        return NULL;
-    }
-#endif
     DPRINTF("usb_goldfish_init:2\n");
 
     /* create guest device */
@@ -1474,17 +732,7 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
 	DPRINTF("usb_qdev_init():r=%d\n", r);
 }
 #endif
-#ifdef TODO
-    if (qdev_prop_set_drive(&dev->qdev, "drive", dinfo->bdrv) < 0) {
-        qdev_free(&dev->qdev);
-        return NULL;
-    }
-#endif
     DPRINTF("usb_goldfish_init:4\n");
-#ifdef TODO
-    if (qdev_init(&dev->qdev) < 0)
-        return NULL;
-#endif
 
     DPRINTF("usb_goldfish_init:5\n");
     return dev;
@@ -1515,7 +763,6 @@ static Property msd_properties[] = {
     DEFINE_PROP_END_OF_LIST(),
 };
 
-#if 1
 /* TODO: ここでデバイス情報を取得するか。 */
 
 static const USBDescStrings goldfish_desc_strings = {
@@ -1545,7 +792,7 @@ static void setConfigDesc(struct usb_config_descriptor *dp)
 	dest->nif = dp->bNumInterfaces;
 	dest->ifs = goldfish_desc_iface_high;
 
-	idp = ++dp;
+	idp = (struct usb_interface_descriptor *)++dp;
 	for (i_inf = 0; i_inf < dp->bNumInterfaces; i_inf++) {
 		dest->ifs[i_inf].bInterfaceNumber = idp->bInterfaceNumber;
 		dest->ifs[i_inf].bAlternateSetting = idp->bAlternateSetting;
@@ -1557,8 +804,8 @@ static void setConfigDesc(struct usb_config_descriptor *dp)
 		
 		dest->ifs[i_inf].ndesc = 0;
 		dest->ifs[i_inf].descs = NULL;
-		dest->ifs[i_inf].eps = goldfish_desc_endpoint;
-		ep = (idp + 1); 
+		dest->ifs[i_inf].eps = (USBDescEndpoint *)goldfish_desc_endpoint;
+		ep = (struct usb_endpoint_descriptor *)(idp + 1);
 		for (i_ep = 0; i_ep < idp->bNumEndpoints; i_ep++) {
 			goldfish_desc_endpoint[nep].bEndpointAddress = ep->bEndpointAddress;
 			goldfish_desc_endpoint[nep].bmAttributes = ep->bmAttributes;
@@ -1566,14 +813,13 @@ static void setConfigDesc(struct usb_config_descriptor *dp)
 			goldfish_desc_endpoint[nep].bInterval = ep->bInterval;
 			goldfish_desc_endpoint[nep].is_audio = 0;
 			goldfish_desc_endpoint[nep].extra = NULL;
-			ep = (((char*)ep) + ep->bLength);
+			ep = (struct usb_endpoint_descriptor *)(((char*)ep) + ep->bLength);
 			nep++;
 		}
-		idp = ep;
+		idp = (struct usb_interface_descriptor *)ep;
 	}
 }
-#endif
-void goldfish_usb_desc_attach(USBDevice *dev)
+static void goldfish_usb_desc_attach(USBDevice *dev)
 {
 	struct usb_packet_setup_DescriptorDeviceRes *devp;
 	struct usb_packet_setup_DescriptorConfigRes *confp;
@@ -1586,7 +832,6 @@ void goldfish_usb_desc_attach(USBDevice *dev)
 	}
 	singletone = 1;
 
-#if 1
 	//DEVICE
 	sendRecvSetupPacket(USB_REQ_GET_DESCRIPTOR, 
 			(USB_DT_DEVICE << 8), 0, 0x12, &devp);
@@ -1609,13 +854,10 @@ void goldfish_usb_desc_attach(USBDevice *dev)
 
 	// CONFIG
 	sendRecvSetupPacket(USB_REQ_GET_DESCRIPTOR, 
-			(USB_DT_CONFIG << 8), 0, 512, &confp);
+			(USB_DT_CONFIG << 8), 0, 512, (struct usb_packet_setup_DescriptorDeviceRes **)&confp);
 	// 1個限定
 	goldfish_desc_device_high.confs = &goldfish_desc_config;
 	setConfigDesc(&confp->config_desc);
-#else
-	usb_desc_attach(dev);
-#endif
 	DPRINTF("goldfish_usb_desc_attach:exit\n");
 }
 
@@ -1648,10 +890,8 @@ static TypeInfo msd_info = {
 
 static void usb_goldfish_register_types(void)
 {
-    DPRINTF("usb_goldfish_register_types:enter\n");
-#ifdef USE_PROTO_ANALYZER
-{
 	struct sockaddr_in in;
+    DPRINTF("usb_goldfish_register_types:enter\n");
 	sock_fd = socket(PF_INET, SOCK_STREAM, 0);
 	if (sock_fd < 0) {
 		return;
@@ -1662,11 +902,6 @@ static void usb_goldfish_register_types(void)
 	inet_aton("127.0.0.1", &(in.sin_addr));
 	bind(sock_fd, (struct sockaddr*)&in, sizeof(in));
 	listen(sock_fd, 5);
-}
-#else
-    (void)unlink(sock_vusb_path);
-    sock_fd = unix_listen(sock_vusb_path, NULL, strlen(sock_vusb_path));
-#endif
     if (sock_fd >= 0) {
 	DPRINTF("sock_fd=%d\n", sock_fd);
 	socket_set_block(sock_fd);

@@ -19,8 +19,297 @@
 #include "blockdev.h"
 #include "goldfish_usbgadget_prot.h"
 #include "iov.h"
+#include "qemu-timer.h"
 
-#define USE_PROTO_ANALYZER
+#define DEBUG_MSD
+#ifdef DEBUG_MSD
+#define DPRINTF(fmt, ...) \
+do { printf("usb-goldfish: " fmt , ## __VA_ARGS__); } while (0)
+#else
+#define DPRINTF(fmt, ...) do {} while(0)
+#endif
+/******************************************************************************
+ * 通信処理
+ *
+ */
+#include "qemu_socket.h"
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+static int sock_fd = -1;
+static int connectToDevice(void);
+static void disconnectToDevice(void);
+static void retry_connect_stop(void);
+/**************************************************
+ * コネクション切断時の再接続処理
+ * 再接続処理は以下の契機で起動する
+ * 1) 起動時
+ * 2) 通信異常発生時(send, recv)
+ **************************************************/
+
+/**
+ * コネクション切れたときに再接続要求するためのタイマーオブジェクト
+ */
+static QEMUTimer *goldfish_timer = NULL;
+
+/**
+ * コネクション再接続リトライ時間(0.1sec)
+ */
+static int64_t retry_time;
+
+/**
+ * タイマーをアップデートする
+ */
+static void update_timer(void)
+{
+        int64_t current_time;
+        retry_time = 1000;
+        current_time = qemu_get_clock_ms(vm_clock);
+        printf("current_time=%lld retry_time=%lld\n", current_time, retry_time);
+        qemu_mod_timer(goldfish_timer, current_time + retry_time);
+}
+/**
+ * タイマー処理
+ */
+static void doRetryConnect(void *opaque)
+{
+        int ret = connectToDevice();
+        if (ret < 0) {
+                printf("doRetryConnect:failed\n");
+                update_timer();
+        } else {
+                printf("doRetryConnect:Success\n");
+                retry_connect_stop();
+        }
+        return;
+}
+/**
+ * タイマースタートする
+ */
+static void retry_connect_start(void)
+{
+        if (goldfish_timer == NULL) {
+                printf("retry_connect_start vm_clock=%p\n", vm_clock);
+                goldfish_timer = qemu_new_timer_ms(vm_clock, doRetryConnect, NULL);
+                assert(goldfish_timer != NULL);
+                update_timer();
+        }
+}
+/**
+ * タイマー停止する
+ */
+static void retry_connect_stop(void)
+{
+        if (goldfish_timer != NULL) {
+                printf("retry_connect_stop\n");
+                qemu_del_timer(goldfish_timer);
+        }
+        goldfish_timer = NULL;
+}
+static int recvUsbData(char *bufp, int len)
+{
+        int ret;
+        ret = qemu_recv_full(sock_fd, bufp, len, 0);
+        if (ret <= 0) {
+        	disconnectToDevice();
+        }
+        return ret;
+}
+
+static int sendUsbData(char *bufp, int len)
+{
+        int ret;
+        //ret = socket_send(sock_fd, bufp, len);
+        printf("before send\n");
+        ret = qemu_send_full(sock_fd, bufp, len, 0);
+        if (ret <= 0) {
+                disconnectToDevice();
+        }
+        printf("ret=%d err=%d\n", ret, errno);
+        //fsync(sock_fd);
+        return ret;
+}
+
+static void declareHost(void)
+{
+        int ret;
+        struct usb_packet_token token;
+        printf("declareHost\n");
+        token.pid_token = USB_PID_HOST;
+        token.endpoint = 0;
+        token.dir = DIR_HOST_TO_SLAVE;
+        ret = sendUsbData((char*)&token, sizeof(token));
+        assert(ret > 0);
+        printf("***** declareHost:ret=%d\n", ret);
+}
+static void deviceEventHandler(void *opaque);
+static int connectToDevice(void)
+{
+        int flag = 1;
+        int sock;
+        struct sockaddr_in in;
+
+        if (sock_fd != -1) {
+                return 0;
+        }
+
+        DPRINTF("connectToDevice\n");
+        sock = socket(PF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+                perror("socket(inet)");
+                return -1;
+        }
+        memset(&in, 0, sizeof(in));
+        in.sin_family = PF_INET;
+        in.sin_port = htons(10000);
+        inet_aton("127.0.0.1", &(in.sin_addr));
+        printf("before socket_set_nonblock\n");
+        socket_set_nonblock(sock);
+        fcntl(sock, F_SETFL, O_NONBLOCK);
+        printf("before setsockopt\n");
+        (void)setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
+        printf("before connect\n");
+        if (connect(sock, (struct sockaddr*) &in, sizeof(in)) < 0) {
+                int ret = errno;
+                printf("err=%d\n", errno);
+                if (errno == EINPROGRESS) {
+                        char byte;
+                        ret = recv(sock, &byte, sizeof(byte), MSG_PEEK);
+                        if (ret == 0 || (ret < 0 && errno == EAGAIN)) {
+                                printf("EINPROGRESS bug OK connect\n");
+                        } else {
+                                close(sock);
+                                printf("err=%d\n", errno);
+                                return -1;
+                        }
+                } else {
+                        close(sock);
+                        return -1;
+                }
+         }
+        sock_fd = sock;
+        declareHost();
+        qemu_set_fd_handler(sock_fd, deviceEventHandler, NULL, NULL);
+        return 0;
+}
+static void disconnectToDevice(void)
+{
+        if (sock_fd != -1) {
+        		  DPRINTF("close:sock_fd = %d\n", sock_fd);
+                qemu_set_fd_handler(sock_fd, NULL, NULL, NULL);
+                close(sock_fd);
+                sock_fd = -1;
+                retry_connect_start();
+        }
+}
+extern int usb_device_add(const char *devname);
+extern int usb_device_del(const char *devname);
+static void vusb_attach(void)
+{
+	int ret;
+	struct usb_packet_token token;
+
+	token.pid_token = USB_PID_RESET;
+	token.endpoint = 0;
+	token.dir = DIR_HOST_TO_SLAVE;
+
+	// SEND RESET
+    ret = sendUsbData((char*)&token, sizeof(token));
+    assert(ret > 0);
+
+    // RECV RESET
+    ret = recvUsbData((char*)&token, sizeof(token));
+    assert(ret > 0);
+    assert(token.pid_token == USB_PID_RESET);
+
+	usb_device_add("goldfish");
+	return;
+}
+static void vusb_dettach(void)
+{
+	usb_device_del("goldfish");
+	return;
+}
+static void deviceEventHandler(void *opaque)
+{
+	int ret;
+	struct usb_packet_token token;
+
+	DPRINTF("deviceEventHandler:enter\n");
+	ret = recvUsbData((char*)&token, sizeof(token));
+	assert(ret == sizeof(token));
+
+	if (token.pid_token == USB_PID_ATTACH) {
+		vusb_attach();
+	} else if (token.pid_token == USB_PID_DETTACH) {
+		vusb_dettach();
+	} else {
+		printf("ERROR!! Invalid token=%d\n", token.pid_token);
+		assert(0);
+	}
+	DPRINTF("deviceEventHandler:exit\n");
+}
+/**
+ * send (SETUP/OUT) TOKEN
+ * send DATA
+ * recv ACK
+ */
+static void sendOUT(struct usb_packet_token *tp, struct usb_packet_data *dp)
+{
+	int ret;
+	struct usb_packet_handshake hs;
+
+	tp->dir = DIR_HOST_TO_SLAVE;
+	dp->dir = DIR_HOST_TO_SLAVE;
+	// send TOKEN
+	ret = sendUsbData((char*)tp, sizeof(*tp));
+	assert(ret > 0);
+	DPRINTF("sendOUT:TOKEN:ret=%d\n", ret);
+	// send DATA
+	ret = sendUsbData((char*)dp, sizeof(struct usb_packet_data_head) + dp->datalen);
+	assert(ret > 0);
+	DPRINTF("sendOUT:DATA:ret=%d\n", ret);
+	// recv ACK
+	ret = sendUsbData((char*)&hs, sizeof(hs));
+	assert(ret > 0);
+	DPRINTF("sendOUT:hand_shake:ret=%d pid=0x%x\n", ret, hs.pid_handshake);
+}
+
+/**
+ * send IN TOKEN
+ * recv DATA
+ * send ACK
+ */
+static void sendIN(struct usb_packet_token *tp, struct usb_packet_data *dp)
+{
+	int ret;
+	struct usb_packet_handshake hs;
+	tp->dir = DIR_HOST_TO_SLAVE;
+	// send IN TOKEN
+	ret = sendUsbData((char*)tp, sizeof(*tp));
+	assert(ret > 0);
+	DPRINTF("sendIN:TOKEN:ret=%d\n", ret);
+	// recv DATA
+	ret = recvUsbData((char*)dp, sizeof(struct usb_packet_data_head));
+	assert(ret > 0);// TODO
+	DPRINTF("sendIN:DATA(1/2):ret=%d\n", ret);
+	if (dp->datalen > 0) {
+		ret += recvUsbData((char*)dp->data, dp->datalen); // TODO
+		assert(ret > 0);
+	}
+	DPRINTF("sendIN:DATA(2/2):ret=%d\n", ret);
+	// send ACK
+	hs.pid_handshake = USB_PID_ACK;
+	hs.endpoint = tp->endpoint;
+	hs.dir = DIR_HOST_TO_SLAVE;
+	ret = sendUsbData((char*)&hs, sizeof(hs));
+	assert(ret > 0);
+	DPRINTF("sendOUT:hand_shake:ret=%d pid=0x%x\n", ret, hs.pid_handshake);
+}
+
+/******************************************************************************/
+
+
 struct usb_packet_setup_DescriptorDeviceRes {
         __u8 pid_handshake;
         __u8 pid_data;
@@ -29,8 +318,7 @@ struct usb_packet_setup_DescriptorDeviceRes {
         __u8 padding1[4];
 };
 //#define DEBUG_MSD
-static void sendOUT(struct usb_packet_token *tp, struct usb_packet_data *dp);
-static void sendIN(struct usb_packet_token *tp, struct usb_packet_data *dp);
+
 
 static void sendNoDataSETUP(struct usb_packet_token *packetp, struct usb_ctrlrequest *req)
 {
@@ -91,13 +379,6 @@ static void sendDataSETUP(struct usb_packet_token *packetp, struct usb_ctrlreque
 	sendOUT(&out, &s_data);
 }
 
-//#define DEBUG_MSD
-#ifdef DEBUG_MSD
-#define DPRINTF(fmt, ...) \
-do { printf("usb-msd: " fmt , ## __VA_ARGS__); } while (0)
-#else
-#define DPRINTF(fmt, ...) do {} while(0)
-#endif
 
 /* USB requests.  */
 #define MassStorageReset  0xff
@@ -317,8 +598,6 @@ static void createGET_DESCRIPTOR(struct usb_ctrlrequest *req,
         req->wLength = wLength;
 }
 
-static int client_fd = -1;
-
 static int sendRecvDataPacket(int pid, int endpoint, 
 			const char* sendBufp, int sendLen,
 				char *recvBufp, int recvLen)
@@ -425,8 +704,8 @@ static void sendRecvSetupPacket(int request,
 		break;
 	}
 
-	DPRINTF("qemu_recv_full():ret=%d pid=0x%x\n", 
-			ret, resp->pid_handshake);
+	//DPRINTF("qemu_recv_full():ret=%d pid=0x%x\n",
+	//		ret, resp->pid_handshake);
 }
 
 /*
@@ -482,7 +761,7 @@ static void usb_goldfish_cancel_io(USBDevice *dev, USBPacket *p)
 {
     MSDState *s = DO_UPCAST(MSDState, dev, dev);
 
-DPRINTF("usb_goldfish_handle_cancel_io:enter:p=0x%x\n", p);
+DPRINTF("usb_goldfish_handle_cancel_io:enter:p=%p\n", p);
     assert(s->packet == p);
     s->packet = NULL;
 
@@ -542,6 +821,7 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 	DPRINTF("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
 }
 #endif
+		assert(data_len <= p->ep->max_packet_size);
 		ret = sendRecvDataPacket(USB_PID_OUT, devep, 
 			sendBuf, data_len, (char*)&res, sizeof(res));
 		if (ret != 0) {
@@ -619,101 +899,14 @@ static int usb_goldfish_init2(USBDevice *dev)
     return 0;
 }
 
-#include "qemu_socket.h"
 
-static int sock_fd = -1;
 
-static void vusb_client_read(void *opaque)
-{
-	int ret;
-	static char buf[255];
-	DPRINTF("vusb_client_read:enter\n");
-	ret = qemu_recv(client_fd, buf, 255, 0);
-	if (ret <= 0) {
-		DPRINTF("vusb_client_read:ret = %d errno=%d\n", ret, errno);
-		qemu_set_fd_handler(client_fd, NULL, NULL, NULL);
-		close(client_fd);
-		client_fd = -1;
-	}
-	DPRINTF("vusb_client_read:exit\n");
-}
-/**
- * send (SETUP/OUT) TOKEN
- * send DATA
- * recv ACK
- */
-static void sendOUT(struct usb_packet_token *tp, struct usb_packet_data *dp)
-{
-	int ret;
-	struct usb_packet_handshake hs;
-
-	tp->dir = DIR_HOST_TO_SLAVE;
-	dp->dir = DIR_HOST_TO_SLAVE;
-	// send TOKEN
-	ret = qemu_send_full(client_fd, tp, sizeof(*tp), 0);
-	DPRINTF("sendOUT:TOKEN:ret=%d\n", ret);
-	// send DATA
-	ret = qemu_send_full(client_fd, dp, sizeof(struct usb_packet_data_head) + dp->datalen, 0);
-	DPRINTF("sendOUT:DATA:ret=%d\n", ret);
-	// recv ACK
-	ret = qemu_recv_full(client_fd, &hs, sizeof(hs), 0);
-	DPRINTF("sendOUT:hand_shake:ret=%d pid=0x%x\n", ret, hs.pid_handshake);
-}
-
-/**
- * send IN TOKEN
- * recv DATA
- * send ACK
- */
-static void sendIN(struct usb_packet_token *tp, struct usb_packet_data *dp)
-{
-	int ret;
-	struct usb_packet_handshake hs;
-	tp->dir = DIR_HOST_TO_SLAVE;
-	// send IN TOKEN
-	ret = qemu_send_full(client_fd, tp, sizeof(*tp), 0);
-	DPRINTF("sendIN:TOKEN:ret=%d\n", ret);
-	// recv DATA
-	ret = qemu_recv_full(client_fd, dp, sizeof(struct usb_packet_data_head), 0); // TODO
-	DPRINTF("sendIN:DATA(1/2):ret=%d\n", ret);
-	if (dp->datalen > 0) {
-		ret += qemu_recv_full(client_fd, dp->data, dp->datalen, 0); // TODO
-	}
-	DPRINTF("sendIN:DATA(2/2):ret=%d\n", ret);
-	// send ACK
-	hs.pid_handshake = USB_PID_ACK;
-	hs.endpoint = tp->endpoint;
-	hs.dir = DIR_HOST_TO_SLAVE;
-	ret = qemu_send_full(client_fd, &hs, sizeof(hs), 0);
-	DPRINTF("sendOUT:hand_shake:ret=%d pid=0x%x\n", ret, hs.pid_handshake);
-}
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-extern int usb_device_add(const char *devname);
-static void vusb_attach(void *opaque)
-{
-	int flag = 1;
-	struct sockaddr_in addr;
-	socklen_t addrlen = sizeof(addr);
-	DPRINTF("vusb_attach:enter\n");
-	client_fd = qemu_accept(sock_fd,
-			(struct sockaddr *)&addr, &addrlen);
-	if (client_fd == -1) {
-		DPRINTF("error accept: %s", strerror(errno));
-		return;
-	}
-	(void)setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
-	qemu_set_fd_handler(client_fd, vusb_client_read, NULL, NULL);
-	usb_device_add("goldfish");
-	DPRINTF("vusb_attach:exit\n");
-	return;
-}
 /***************** USB プロトコル層 ******************/
 /****************************************************/
 static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
 {
     USBDevice *dev;
-    DPRINTF("usb_goldfish_init:bus=0x%x\n", bus);
+    DPRINTF("usb_goldfish_init:bus=%p\n", bus);
 
 
     /* parse -usbdevice disk: syntax into drive opts */
@@ -735,6 +928,7 @@ static USBDevice *usb_goldfish_init(USBBus *bus, const char *filename)
     DPRINTF("usb_goldfish_init:4\n");
 
     DPRINTF("usb_goldfish_init:5\n");
+
     return dev;
 }
 
@@ -890,25 +1084,9 @@ static TypeInfo msd_info = {
 
 static void usb_goldfish_register_types(void)
 {
-	struct sockaddr_in in;
-    DPRINTF("usb_goldfish_register_types:enter\n");
-	sock_fd = socket(PF_INET, SOCK_STREAM, 0);
-	if (sock_fd < 0) {
-		return;
-	}
-	memset(&in, 0, sizeof(in));
-	in.sin_family = PF_INET;
-	in.sin_port = htons(10000);
-	inet_aton("127.0.0.1", &(in.sin_addr));
-	bind(sock_fd, (struct sockaddr*)&in, sizeof(in));
-	listen(sock_fd, 5);
-    if (sock_fd >= 0) {
-	DPRINTF("sock_fd=%d\n", sock_fd);
-	socket_set_block(sock_fd);
-    	qemu_set_fd_handler(sock_fd, vusb_attach, NULL, NULL);
-    }
     type_register_static(&msd_info);
     usb_legacy_register("usb-goldfish", "goldfish", usb_goldfish_init);
+    doRetryConnect(NULL);
 }
 
 type_init(usb_goldfish_register_types)

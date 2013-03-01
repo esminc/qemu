@@ -34,6 +34,21 @@ static void sendACK(int endpoint)
 	ret = sendUsbData((char*)&token, sizeof(token));
 	dbg("***** sendACK:ret=%d\n", ret);
 }
+static void sendDataACK(int endpoint, int datalen)
+{
+	int ret;
+	int *lenp;
+	struct usb_packet_handshake token;
+	dbg("sendDataACK:ep_nr=%d\n", endpoint);
+	token.pid_handshake = USB_PID_ACK;
+	token.endpoint = endpoint;
+	token.dir = DIR_SLAVE_TO_HOST;
+
+	lenp = &token.padding1[0];
+	*lenp = datalen;
+	ret = sendUsbData((char*)&token, sizeof(token));
+	dbg("***** sendDataACK:ret=%d len=%d\n", ret, datalen);
+}
 
 static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset);
 
@@ -318,8 +333,10 @@ static void goldfish_usbgadget_write(void *opaque, target_phys_addr_t offset, ui
 		old = REG(baseAddr);
 		if ((old & GOLDFISH_UDC_OCSR1_PKTRDY) && (value & GOLDFISH_UDC_OCSR1_PKTRDY)) {
 			value &= ~(GOLDFISH_UDC_OCSR1_PKTRDY);
+			int datalen;
+			datalen = getFifoCount(ep_nr);
 			guestOSWrite(baseAddr, value);
-			sendACK(ep_nr);
+			sendDataACK(ep_nr, datalen);
 		} else {
 			guestOSWrite(baseAddr, value);
 		}

@@ -105,6 +105,49 @@ static void initMmap(void)
 }
 }
 
+static uint32_t getFifoCountAddr(int ep_nr)
+{
+	int addr = 0;
+	switch (ep_nr) {
+	case 1:
+		addr = GOLDFISH_UDC_EP1_FIFO_CNT_REG;
+		break;
+	case 2:
+		addr = GOLDFISH_UDC_EP2_FIFO_CNT_REG;
+		break;
+	case 3:
+		addr = GOLDFISH_UDC_EP3_FIFO_CNT_REG;
+		break;
+	case 4:
+		addr = GOLDFISH_UDC_EP4_FIFO_CNT_REG;
+		break;
+	case 5:
+		addr = GOLDFISH_UDC_EP5_FIFO_CNT_REG;
+		break;
+	case 6:
+		addr = GOLDFISH_UDC_EP6_FIFO_CNT_REG;
+		break;
+	case 7:
+		addr = GOLDFISH_UDC_EP7_FIFO_CNT_REG;
+		break;
+	default:
+		addr = GOLDFISH_UDC_EP0_FIFO_CNT_REG;
+		break;
+	}
+	return addr;
+}
+#define dbg printf
+
+uint32_t getFifoCount(int ep_nr)
+{
+	int regAddr;
+	int count;
+	regAddr = getFifoCountAddr(ep_nr);
+	count = REG(regAddr);
+	dbg("getFifoCount=%d\n", count);
+	return count;
+}
+
 uint32_t getFifoAddr(int ep_nr)
 {
 	int addr = 0;
@@ -136,7 +179,6 @@ uint32_t getFifoAddr(int ep_nr)
 	}
 	return addr;
 }
-#define dbg printf
 
 void sendData(target_phys_addr_t regAddr, char *p, int len)
 {

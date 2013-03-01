@@ -12,6 +12,7 @@ extern int recvFifoData(target_phys_addr_t regAddr, char *p);
 extern void sendData(target_phys_addr_t regAddr, char *p, int len);
 extern void init_udc_deviceRegister(void);
 extern uint32_t getFifoAddr(int ep_nr);
+extern uint32_t getFifoCount(int ep_nr);
 #define REG(regAddr)		deviceRead(regAddr)
 #define REGSET(regAddr, value)	deviceWrite(regAddr, value)
 #define UDC_FIFO_NUM	9

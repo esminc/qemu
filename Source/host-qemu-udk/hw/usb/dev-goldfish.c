@@ -638,7 +638,9 @@ static int sendRecvDataPacket(int pid, int endpoint,
 	case USB_PID_OUT:
 		datap->pid_token = USB_PID_DATA_0;
 		datap->datalen = sendLen;
-		memcpy(datap->data, sendBufp, sendLen);
+		if (sendBufp) {
+			memcpy(datap->data, sendBufp, sendLen);
+		}
 		sendOUT(&token, datap);
 		break;
 	default:
@@ -819,22 +821,58 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 
 	switch (p->pid) {
 	case USB_TOKEN_OUT:
-		data_len = iov_to_buf(p->iov.iov, p->iov.niov, p->result, sendBuf, 4096*3);
-		p->result += data_len; 
-		DPRINTF("usb_goldfish_handle_data:OUT:iov_size=%d data_len=%d\n", p->iov.size, data_len);
 #if 1
 {
-	struct usb_goldfish_cbw *cbw;
-	cbw = (struct usb_goldfish_cbw*)sendBuf;
-	DPRINTF("usb_goldfish_handle_data:sig=0x%x\n", cbw->sig);
-	DPRINTF("usb_goldfish_handle_data:tag=0x%x\n", cbw->tag);
-	DPRINTF("usb_goldfish_handle_data:datalen=0x%x\n", cbw->data_len);
-	DPRINTF("usb_goldfish_handle_data:flags=0x%x\n", cbw->flags);
-	DPRINTF("usb_goldfish_handle_data:lun=0x%x\n", cbw->lun);
-	DPRINTF("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
-	DPRINTF("usb_goldfish_handle_data:cmd[0]=0x%x\n", cbw->cmd[0]);
-}
+		int off = 0;
+		int sendlen = 0;
+		struct usb_goldfish_cbw *cbw;
+		data_len = iov_to_buf(p->iov.iov, p->iov.niov, p->result, sendBuf, 4096*3);
+		cbw = (struct usb_goldfish_cbw*)sendBuf;
+		DPRINTF("usb_goldfish_handle_data:sig=0x%x\n", cbw->sig);
+		DPRINTF("usb_goldfish_handle_data:tag=0x%x\n", cbw->tag);
+		DPRINTF("usb_goldfish_handle_data:datalen=0x%x\n", cbw->data_len);
+		DPRINTF("usb_goldfish_handle_data:flags=0x%x\n", cbw->flags);
+		DPRINTF("usb_goldfish_handle_data:lun=0x%x\n", cbw->lun);
+		DPRINTF("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
+		DPRINTF("usb_goldfish_handle_data:cmd[0]=0x%x\n", cbw->cmd[0]);
+		//sendlen = sizeof(struct usb_goldfish_cbw);
+		sendlen = 31;
+
+		while (data_len > 0) {
+			DPRINTF("off=%d data_len=%d sendlen=%d\n", off, data_len, sendlen);
+			ret = sendRecvDataPacket(USB_PID_OUT, devep, 
+				&sendBuf[off], sendlen, (char*)&res, sizeof(res));
+			if (ret != 0) {
+				ret = USB_RET_STALL;
+				break;
+			} else {
+				ret = handshake2ret(res.pid_handshake);
+				if (ret != 0) {
+					break;
+				}
+			}
+			off += sendlen;
+			data_len -= sendlen;
+			p->result += sendlen;
+			if (data_len > p->ep->max_packet_size) {
+				sendlen = p->ep->max_packet_size;
+			}
+		}
+#if 0
+		if (sendlen == p->ep->max_packet_size) {
+			// send zero len packet
+			DPRINTF("send zero len packet\n");
+			ret = sendRecvDataPacket(USB_PID_OUT, devep, 
+				NULL, 0, (char*)&res, sizeof(res));
+			if (ret != 0) {
+				ret = USB_RET_STALL;
+			} else {
+				ret = handshake2ret(res.pid_handshake);
+			}
+		}
 #endif
+}
+#else
 		assert(data_len <= p->ep->max_packet_size);
 		ret = sendRecvDataPacket(USB_PID_OUT, devep, 
 			sendBuf, data_len, (char*)&res, sizeof(res));
@@ -843,6 +881,7 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 		} else {
 			ret = handshake2ret(res.pid_handshake);
 		}
+#endif
 		break;
 	case USB_TOKEN_IN:
 {

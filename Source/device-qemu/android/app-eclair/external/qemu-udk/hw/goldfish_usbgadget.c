@@ -39,6 +39,7 @@ static void sendDataACK(int endpoint, int datalen)
 	int ret;
 	int *lenp;
 	struct usb_packet_handshake token;
+	struct usb_packet_token restoken;
 	dbg("sendDataACK:ep_nr=%d\n", endpoint);
 	token.pid_handshake = USB_PID_ACK;
 	token.endpoint = endpoint;
@@ -48,6 +49,10 @@ static void sendDataACK(int endpoint, int datalen)
 	*lenp = datalen;
 	ret = sendUsbData((char*)&token, sizeof(token));
 	dbg("***** sendDataACK:ret=%d len=%d\n", ret, datalen);
+
+	//recv
+	ret = recvToken(&restoken);
+	dbg("sendDataACK:pid=%d\n", restoken.pid_token);
 }
 
 static uint32_t goldfish_usbgadget_read(void *opaque, target_phys_addr_t offset);
@@ -69,7 +74,7 @@ static int recvToken(struct usb_packet_token *tp)
 {
 	int ret;
 	ret = recvUsbData((char*)tp, sizeof(*tp));
-	dbg("***** recvToken:ret=%d\n", ret);
+	dbg("***** recvToken:ret=%d errno=%d\n", ret, errno);
 	return ret;
 }
 void hostEventHandler(void *opaque) 
@@ -227,10 +232,10 @@ static int connectToHost(void)
 	in.sin_family = PF_INET;
 	in.sin_port = htons(10000);
 	inet_aton("127.0.0.1", &(in.sin_addr));
-	printf("before socket_set_nonblock\n");
-	socket_set_nonblock(sock);
-	fcntl(sock, F_SETFL, O_NONBLOCK);
-	printf("before setsockopt\n");
+	//printf("before socket_set_nonblock\n");
+	//socket_set_nonblock(sock);
+	//fcntl(sock, F_SETFL, O_NONBLOCK);
+	//printf("before setsockopt\n");
 	(void)setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
 	printf("before connect\n");
 	if (connect(sock, (struct sockaddr*) &in, sizeof(in)) < 0) {

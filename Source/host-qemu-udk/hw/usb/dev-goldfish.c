@@ -835,10 +835,12 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 		DPRINTF("usb_goldfish_handle_data:lun=0x%x\n", cbw->lun);
 		DPRINTF("usb_goldfish_handle_data:cmdlen=0x%x\n", cbw->cmd_len);
 		DPRINTF("usb_goldfish_handle_data:cmd[0]=0x%x\n", cbw->cmd[0]);
-		//sendlen = sizeof(struct usb_goldfish_cbw);
-		sendlen = 31;
-
+		//sendlen = 31;
 		while (data_len > 0) {
+			sendlen = data_len;//TODO
+			if (data_len > p->ep->max_packet_size) {
+				sendlen = p->ep->max_packet_size;
+			}
 			DPRINTF("off=%d data_len=%d sendlen=%d\n", off, data_len, sendlen);
 			ret = sendRecvDataPacket(USB_PID_OUT, devep, 
 				&sendBuf[off], sendlen, (char*)&res, sizeof(res));
@@ -854,9 +856,6 @@ static int usb_goldfish_handle_data(USBDevice *dev, USBPacket *p)
 			off += sendlen;
 			data_len -= sendlen;
 			p->result += sendlen;
-			if (data_len > p->ep->max_packet_size) {
-				sendlen = p->ep->max_packet_size;
-			}
 		}
 #if 0
 		if (sendlen == p->ep->max_packet_size) {
